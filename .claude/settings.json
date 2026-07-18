@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git merge*)",
+      "Bash(git rebase*)",
+      "Bash(git cherry-pick*)",
+      "Bash(git reset*)",
+      "Bash(git tag*)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr merge*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r \".tool_input.command // \\\"\\\"\" | grep -qiE \"(^|[^a-z])(git|gh)([^a-zA-Z]|$).*(commit|push|merge|rebase|pr +create|pr +merge)\" && echo \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"permissionDecision\\\":\\\"deny\\\",\\\"permissionDecisionReason\\\":\\\"Operações git de escrita (commit/push/merge/rebase/PR) são exclusivas do humano — ADR-0006\\\"}}\" || true",
+            "timeout": 10,
+            "statusMessage": "Verificando guardrail de git"
+          }
+        ]
+      }
+    ]
+  }
+}

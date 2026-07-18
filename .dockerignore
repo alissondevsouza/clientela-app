@@ -1,0 +1,33 @@
+# Contexto de build enxuto: envia só o necessário para os Dockerfiles
+# (manifests do monorepo, bun.lock, apps/ e packages/). Segredos e artefatos fora.
+
+# Dependências e artefatos de build (reinstalados/regerados dentro da imagem)
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+*.tsbuildinfo
+coverage
+
+# Segredos: nenhum arquivo de ambiente entra no contexto de build, em NENHUM
+# nível do monorepo (security.md). Os padrões sem `**/` casam só na raiz do
+# contexto; os com `**/` pegam apps/web/.env.local, apps/api/.env etc.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Metadados de repositório e documentação (irrelevantes para runtime)
+.git
+.gitignore
+specs
+project-memory
+.claude
+README.md
+docker-compose.dev.yml
+
+# Ruído local
+*.log
+.DS_Store

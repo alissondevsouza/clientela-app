@@ -1,0 +1,25 @@
+# Postgres local de desenvolvimento.
+# Credenciais aqui NAO sao segredo: banco de dev, exposto apenas em localhost.
+# Requer Postgres 18 (uuidv7() nativo) — ver specs/dev-db-drizzle-leads/plan.md.
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: clientela_pg_dev
+    environment:
+      POSTGRES_USER: clientela
+      POSTGRES_PASSWORD: clientela
+      POSTGRES_DB: clientela
+    ports:
+      # Porta do host configurável (default 5433) para evitar conflito com Postgres nativo em 5432.
+      - "127.0.0.1:${CLIENTELA_PG_PORT:-5433}:5432"
+    volumes:
+      # postgres:18+ armazena os dados em /var/lib/postgresql (não .../data) — docker-library/postgres PR #1259.
+      - clientela_pg_dev:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clientela -d clientela"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  clientela_pg_dev:

@@ -1,0 +1,11 @@
+# Proxy reverso do compose de produção.
+#
+# {$DOMAIN} vem do environment do serviço caddy:
+#   - domínio real (ex.: https://seudominio.com) → HTTPS automático (Let's Encrypt).
+#   - http://localhost → HTTP puro, sem ACME (usado no smoke local).
+#
+# reverse_proxy anexa X-Forwarded-For por padrão — o rate limit por visitante da
+# API (LP-06) depende disso.
+{$DOMAIN} {
+	reverse_proxy web:3000
+}

@@ -1,0 +1,137 @@
+import { ArrowLeft, MessageCircle } from "lucide-react";
+import type { Metadata } from "next";
+import { cookies } from "next/headers";
+import Link from "next/link";
+import { notFound, redirect } from "next/navigation";
+import { updateClientAction } from "@/app/(crm)/crm/clients/actions";
+import { ClientForm } from "@/components/clients/client-form";
+import { DeleteClientButton } from "@/components/clients/delete-client-button";
+import { buttonVariants } from "@/components/ui/button";
+import { SESSION_COOKIE_NAME } from "@/lib/auth";
+import { getClient } from "@/lib/clients-api";
+import { loadWebEnv } from "@/lib/env";
+import { formatDateBr } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { buildWhatsAppUrl, toWaPhone } from "@/lib/whatsapp";
+
+const PAGE_TITLE = "Cliente";
+const EDIT_HEADING = "Editar dados";
+const SAVE_LABEL = "Salvar alterações";
+const BACK_LABEL = "Voltar para clientes";
+const LIST_HREF = "/crm/clients";
+const LOGIN_PATH = "/login";
+
+const BIRTHDAY_LABEL = "Aniversário";
+const SKIN_TONE_LABEL = "Tom de pele";
+const NOT_INFORMED = "Não informado";
+
+// Robots (noindex) é herdado do layout do grupo `(crm)`.
+export const metadata: Metadata = {
+  title: PAGE_TITLE,
+};
+
+type ClientDetailPageProps = {
+  params: Promise<{ id: string }>;
+};
+
+const whatsappAriaLabel = (name: string): string =>
+  `Conversar com ${name} no WhatsApp`;
+
+// Detalhe/edição de cliente (RSC async, server-first): `params` é uma Promise
+// (Next 15) — await antes de usar. Busca a cliente com o Bearer do cookie; 404 ⇒
+// `notFound()` (usa o `not-found.tsx` local); falha genérica ⇒ `throw` (cai no
+// `error.tsx` local). O form de edição liga a Server Action `updateClientAction`
+// com o id fixado por `.bind`. O botão WhatsApp normaliza o número armazenado
+// (só dígitos) para E.164 antes de montar o link (RF-08).
+export default async function ClientDetailPage({
+  params,
+}: ClientDetailPageProps) {
+  const { id } = await params;
+
+  const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
+  if (!token) {
+    redirect(LOGIN_PATH);
+  }
+
+  const result = await getClient(id, {
+    fetchImpl: fetch,
+    apiUrl: loadWebEnv().API_URL,
+    token,
+  });
+
+  if (!result.ok) {
+    if (result.notFound) {
+      notFound();
+    }
+    throw new Error(result.message);
+  }
+
+  const { client } = result;
+  const waHref = buildWhatsAppUrl({ phone: toWaPhone(client.whatsapp) });
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Link
+          href={LIST_HREF}
+          className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="size-4" aria-hidden />
+          {BACK_LABEL}
+        </Link>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="font-heading text-2xl font-semibold break-words">
+            {client.name}
+          </h1>
+          <a
+            href={waHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={whatsappAriaLabel(client.name)}
+            className={cn(
+              buttonVariants({ variant: "outline", size: "icon" }),
+              "size-11 shrink-0 md:size-9",
+            )}
+          >
+            <MessageCircle aria-hidden />
+          </a>
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-1 gap-3 rounded-xl bg-card p-4 text-sm ring-1 ring-foreground/10 sm:grid-cols-2">
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">WhatsApp</dt>
+          <dd>{client.whatsapp}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{BIRTHDAY_LABEL}</dt>
+          <dd>
+            {client.birthday ? formatDateBr(client.birthday) : NOT_INFORMED}
+          </dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{SKIN_TONE_LABEL}</dt>
+          <dd>{client.skinTone ?? NOT_INFORMED}</dd>
+        </div>
+      </dl>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="font-heading text-lg font-semibold">{EDIT_HEADING}</h2>
+        <ClientForm
+          mode="edit"
+          submitLabel={SAVE_LABEL}
+          onSubmit={updateClientAction.bind(null, client.id)}
+          defaultValues={{
+            name: client.name,
+            whatsapp: client.whatsapp,
+            birthday: client.birthday ?? "",
+            skinTone: client.skinTone ?? "",
+            notes: client.notes ?? "",
+          }}
+        />
+      </section>
+
+      <DeleteClientButton clientId={client.id} />
+    </div>
+  );
+}

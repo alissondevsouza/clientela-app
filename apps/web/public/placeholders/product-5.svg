@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600" role="img" aria-label="Ilustração de exemplo de produto">
+  <rect width="600" height="600" fill="#f6e8ee" />
+  <ellipse cx="300" cy="300" rx="110" ry="170" fill="#cc94ab" />
+  <ellipse cx="300" cy="300" rx="50" ry="110" fill="#6f4c5c" />
+  <circle cx="300" cy="120" r="40" fill="#e6cdd8" />
+  <text x="300" y="560" font-family="system-ui, sans-serif" font-size="30" fill="#6f4c5c" text-anchor="middle">Produto de exemplo</text>
+</svg>

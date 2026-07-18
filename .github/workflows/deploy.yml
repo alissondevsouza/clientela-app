@@ -1,0 +1,175 @@
+name: Deploy
+
+# Deploy contínuo de produção para a VPS (ADR-0010 + ADR-0011). Dispara no push
+# da main e sob demanda (workflow_dispatch — botão "Run workflow" na aba Actions).
+#
+# Fluxo (modelo PULL via GHCR — ADR-0011):
+#   job `ci`         → gates de qualidade DESTE commit (reuso do ci.yml)
+#   job `build-push` → builda as 3 imagens NO RUNNER e publica no GHCR (só com CI verde)
+#   job `deploy`     → na VPS: pull da tag exata → migração → up (nem build, nem código-fonte)
+# A VPS deixou de buildar: recebe só infra e puxa imagens prontas do GHCR.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Permissões mínimas no topo (fallback). Cada job REDEFINE as suas — permissions
+# de job SUBSTITUEM (não somam) as do topo: por isso todo job que faz checkout
+# repete `contents: read`, e build-push/deploy declaram o escopo de packages.
+permissions:
+  contents: read
+
+jobs:
+  # Reusa o pipeline de qualidade como gate. A main não dispara o ci.yml
+  # diretamente (ele tem `branches-ignore: [main]`); é AQUI que a CI da main roda.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # Builda as 3 imagens no runner e publica no GHCR. Tirar o build da VPS (KVM 2,
+  # o hardware mais fraco do fluxo) é o ganho central do ADR-0011.
+  build-push:
+    name: Build e push das imagens (GHCR)
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Só a main publica imagens: um workflow_dispatch de outra ref roda a CI mas
+    # nunca chega aqui.
+    if: github.ref == 'refs/heads/main'
+    # packages:write para publicar no GHCR; contents:read para o checkout. SEM
+    # contents:read aqui o checkout falharia (as do topo NÃO são herdadas).
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      owner: ${{ steps.meta.outputs.owner }}
+    steps:
+      # Fail-fast: sem as Variables de build, o web sairia com metadata/WhatsApp
+      # vazios. Falha ANTES de qualquer build, com o caminho exato no guia.
+      - name: Validar Variables de build
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          WHATSAPP_PHONE: ${{ vars.WHATSAPP_PHONE }}
+        run: |
+          missing=()
+          [ -n "$SITE_URL" ] || missing+=("SITE_URL")
+          [ -n "$WHATSAPP_PHONE" ] || missing+=("WHATSAPP_PHONE")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Variables de build ausentes: ${missing[*]}. Cadastre em Settings → Secrets and variables → Actions → Variables (ver docs/deploy-vps.md seção 5.6)."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Metadados (owner lowercase + tag do commit)
+        id: meta
+        env:
+          # GHCR exige owner em minúsculas; github.repository_owner pode ter
+          # maiúsculas. Via env (não interpolado direto no shell) — sem injeção.
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          owner="$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "owner=${owner}"
+            echo "image_tag=sha-${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Login no GHCR
+        # Token do run (efêmero) via stdin — nunca ecoado na linha de comando.
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Build e push (web, api, migrate — tags :latest e :sha-<curto>)
+        # Build args do web = Variables (não são segredo: aparecem no HTML SSG).
+        # API_URL é fixo no nome interno do compose. `:latest` é informativa —
+        # o deploy sempre puxa pela tag sha exata.
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+          WHATSAPP_PHONE: ${{ vars.WHATSAPP_PHONE }}
+          WHATSAPP_DEFAULT_MESSAGE: ${{ vars.WHATSAPP_DEFAULT_MESSAGE }}
+          OWNER: ${{ steps.meta.outputs.owner }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          web="ghcr.io/${OWNER}/clientela-web"
+          api="ghcr.io/${OWNER}/clientela-api"
+          migrate="ghcr.io/${OWNER}/clientela-migrate"
+
+          docker build -f apps/web/Dockerfile \
+            --build-arg SITE_URL="$SITE_URL" \
+            --build-arg API_URL="http://api:3001" \
+            --build-arg WHATSAPP_PHONE="$WHATSAPP_PHONE" \
+            --build-arg WHATSAPP_DEFAULT_MESSAGE="$WHATSAPP_DEFAULT_MESSAGE" \
+            -t "${web}:latest" -t "${web}:${IMAGE_TAG}" .
+
+          docker build -f apps/api/Dockerfile --target runtime \
+            -t "${api}:latest" -t "${api}:${IMAGE_TAG}" .
+
+          docker build -f apps/api/Dockerfile --target migrate \
+            -t "${migrate}:latest" -t "${migrate}:${IMAGE_TAG}" .
+
+          docker push --all-tags "$web"
+          docker push --all-tags "$api"
+          docker push --all-tags "$migrate"
+
+      - name: Logout do GHCR
+        if: always()
+        run: docker logout ghcr.io || true
+
+  deploy:
+    name: Publicar na VPS
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Guard main-only redundante (build-push já é main-only) — defesa em profundidade.
+    if: github.ref == 'refs/heads/main'
+    # packages:read para o token do run puxar as imagens PRIVADAS na VPS (sem ele o
+    # pull vem `denied`); contents:read para o checkout do scripts/deploy.sh.
+    permissions:
+      contents: read
+      packages: read
+    # Serializa deploys: nunca dois compose em paralelo. cancel-in-progress false =
+    # deploys enfileiram (cancelar no meio deixaria a VPS em estado parcial).
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Configurar SSH
+        # Segredos lidos por variável de ambiente e escritos com printf — o valor
+        # nunca aparece na linha de comando do log. Host key FIXADA via known_hosts
+        # (verificação estrita mantida, sem desligar checagem de host): evita MitM.
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy
+        # O script sincroniza SÓ a infra e, na VPS, loga no GHCR (token via stdin),
+        # puxa a IMAGE_TAG exata, migra e sobe. GHCR_TOKEN = GITHUB_TOKEN do run
+        # (efêmero, packages:read). Nenhum echo de segredo — o deploy.sh não ecoa envs.
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          IMAGE_TAG: ${{ needs.build-push.outputs.image_tag }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/deploy.sh
+
+      - name: Logout GHCR na VPS (segurança)
+        # Cinto e suspensório: o script já faz logout via trap em qualquer saída;
+        # este step garante o logout mesmo se o script abortar antes de armar o trap.
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: ssh "$DEPLOY_HOST" "docker logout ghcr.io" || true

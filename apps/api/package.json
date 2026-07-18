@@ -1,0 +1,25 @@
+{
+  "name": "@clientela/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "bun --env-file=../../.env drizzle-kit generate",
+    "db:migrate": "bun --env-file=../../.env drizzle-kit migrate",
+    "db:migrate:prod": "drizzle-kit migrate",
+    "seed:consultant": "bun --env-file=../../.env scripts/seed-consultant.ts"
+  },
+  "dependencies": {
+    "@clientela/shared": "workspace:*",
+    "drizzle-orm": "^0.44.6",
+    "elysia": "^1.4.29",
+    "postgres": "^3.4.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^11.7.1",
+    "drizzle-kit": "^0.31.6"
+  }
+}

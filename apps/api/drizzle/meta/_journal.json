@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784253469357,
+      "tag": "0000_new_gideon",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784327535310,
+      "tag": "0001_third_trauma",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784331903212,
+      "tag": "0002_clear_yellowjacket",
+      "breakpoints": true
+    }
+  ]
+}
