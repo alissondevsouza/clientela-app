@@ -1,5 +1,12 @@
 import type { LucideIcon } from "lucide-react";
-import { Home, Package, ShoppingBag, UserPlus, Users } from "lucide-react";
+import {
+  ClipboardList,
+  Home,
+  Package,
+  ShoppingBag,
+  UserPlus,
+  Users,
+} from "lucide-react";
 
 export type CrmNavItem = {
   href: string;
@@ -15,6 +22,7 @@ export const CRM_NAV_ITEMS: readonly CrmNavItem[] = [
   { href: "/crm/leads", label: "Leads", icon: UserPlus },
   { href: "/crm/products", label: "Produtos", icon: Package },
   { href: "/crm/sales", label: "Vendas", icon: ShoppingBag },
+  { href: "/crm/orders", label: "Pedidos", icon: ClipboardList },
 ];
 
 const stripTrailingSlashes = (pathname: string): string => {

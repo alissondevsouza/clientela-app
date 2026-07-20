@@ -8,7 +8,7 @@ description: >-
   clientela-spec-driven orchestrator; after it runs, a NEW neutral verifier
   re-validates from scratch.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
+model: sonnet
 ---
 
 Você é um **corretor**. Sua tarefa é resolver **exatamente** os achados apontados por um revisor de QA neutro — nada além do escopo reportado.

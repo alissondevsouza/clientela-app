@@ -8,7 +8,7 @@ description: >-
   the clientela-spec-driven orchestrator. Its work is later reviewed by a SEPARATE
   neutral clientela-implement-verifier.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
+model: sonnet
 ---
 
 Você é um **implementador**. Sua tarefa é executar as tasks atribuídas de um plano **já aprovado**, com qualidade e aderência total às rules.

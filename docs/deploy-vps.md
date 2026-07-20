@@ -1,6 +1,13 @@
 # Guia de deploy — VPS Hostinger + consultoralaisbarbosa.com.br
 
-Passo a passo completo para colocar a landing page no ar: segurança mínima da VPS, DNS, estrutura de diretórios e o deploy em si. Escrito para a **VPS KVM 2 da Hostinger** (2 vCPU, 8 GB RAM) com **Ubuntu 24.04** e o domínio **consultoralaisbarbosa.com.br** (ADR-0009).
+Passo a passo completo para colocar **a landing page e o CRM** no ar: segurança mínima da VPS, DNS, estrutura de diretórios e o deploy em si. Escrito para a **VPS KVM 2 da Hostinger** (2 vCPU, 8 GB RAM) com **Ubuntu 24.04** e os endereços (ADR-0009 + ADR-0017):
+
+| Endereço | Serve |
+|---|---|
+| `consultoralaisbarbosa.com.br` (+ `www`) | Landing page pública |
+| `gestao.consultoralaisbarbosa.com.br` | CRM (login da consultora; a raiz redireciona para `/crm`) |
+
+É o **mesmo app web** nos dois endereços — a separação é por host no proxy (Caddy), com certificado HTTPS automático para os três hosts.
 
 **O que já está pronto no repositório** (você não precisa criar nada disso):
 
@@ -19,7 +26,8 @@ O fluxo é: **preparar DNS → preparar a VPS (uma vez) → criar o `.env` na VP
 
 ## 0. Pré-requisitos na SUA máquina
 
-- O repositório clonado (você já tem) e `rsync` instalado (`rsync --version`; no Ubuntu: `sudo apt install rsync`).
+- O repositório clonado (você já tem).
+- `rsync` **só se** um dia usar o fallback manual da seção 6 (rodar o `scripts/deploy.sh` da sua máquina) — no fluxo normal quem executa o script é o runner do GitHub Actions, que já o tem. (`rsync --version`; no Ubuntu: `sudo apt install rsync`.)
 - Uma **conta no GitHub** (o deploy automático roda no GitHub Actions — seção 5). Se ainda não tem, crie em [github.com](https://github.com); o repositório será **privado**.
 - Uma chave SSH. Se ainda não tem (`ls ~/.ssh/*.pub` vazio), crie:
 
@@ -41,13 +49,15 @@ O Caddy só consegue emitir o certificado HTTPS quando o domínio **já aponta**
 |---|---|---|---|
 | A | `@` | IP da VPS | 3600 (ou o mínimo disponível) |
 | A | `www` | IP da VPS | 3600 |
+| A | `gestao` | IP da VPS | 3600 |
 
 3. Verifique a propagação (da sua máquina, pode levar de minutos a algumas horas):
 
 ```bash
 dig +short consultoralaisbarbosa.com.br
 dig +short www.consultoralaisbarbosa.com.br
-# Ambos devem responder o IP da VPS antes do primeiro deploy (seção 6)
+dig +short gestao.consultoralaisbarbosa.com.br
+# Os três devem responder o IP da VPS antes do primeiro deploy (seção 6)
 ```
 
 ---
@@ -200,8 +210,10 @@ Preencha assim (substitua `SENHA_GERADA` e o telefone real):
 # GHCR — dono do pacote das imagens no GitHub, em MINÚSCULAS (owner lowercase)
 GHCR_OWNER=seu_usuario_github
 
-# Caddy — os DOIS endereços no mesmo bloco (raiz + www, ADR-0009); HTTPS automático p/ ambos
+# Caddy — landing: os DOIS endereços no mesmo bloco (raiz + www, ADR-0009)
 DOMAIN=consultoralaisbarbosa.com.br, www.consultoralaisbarbosa.com.br
+# Caddy — CRM em host próprio (ADR-0017); a raiz dele redireciona para /crm
+CRM_DOMAIN=gestao.consultoralaisbarbosa.com.br
 
 # Postgres (interno; nunca exposto)
 POSTGRES_PASSWORD=SENHA_GERADA
@@ -215,6 +227,7 @@ WHATSAPP_PHONE=55DDDNUMERO          # com DDI 55! ex.: 5511912345678
 ```
 
 Atenção aos detalhes que mais causam erro:
+- `CRM_DOMAIN` é **obrigatória** desde o ADR-0017 — o compose falha explícito sem ela. Sem esquema (`https://` é automático) e sem `www`.
 - `GHCR_OWNER` em **minúsculas** (o GHCR só aceita owner lowercase) — é seu usuário/organização do GitHub; o compose monta `ghcr.io/${GHCR_OWNER}/clientela-{web,api,migrate}`. Sem ele o `up`/`pull` falha explícito.
 - `POSTGRES_PASSWORD` e a senha dentro de `DATABASE_URL` devem ser **idênticas**.
 - `WHATSAPP_PHONE` **começa com 55** (sem ele, o link wa.me quebra silenciosamente).
@@ -342,7 +355,7 @@ O que o job `deploy` executa na VPS (o `scripts/deploy.sh`, falhando cedo com me
 
 > **PRIMEIRO RUN**: fique de olho na aba **Actions** no primeiro push. Se o job `deploy` falhar logo no SSH, quase sempre é secret errado; se o pull vier `denied`, é permissão/pacote (veja "Problemas comuns"). Erros de build agora aparecem no job **`build-push`**, não mais na VPS.
 
-No primeiro `up`, o Caddy pede os certificados ao Let's Encrypt para os dois endereços — leva segundos **se o DNS já propagou**. Acompanhe com:
+No primeiro `up`, o Caddy pede os certificados ao Let's Encrypt para os **três** endereços (raiz, `www` e `gestao`) — leva segundos **se o DNS já propagou**. Acompanhe com:
 
 ```bash
 ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose logs -f caddy"
@@ -363,6 +376,32 @@ DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/opt/clientela ./scripts/deploy.sh     
 
 > **Limite honesto (ADR-0011):** se o **GitHub estiver fora do ar**, não há build nem pull — sem imagem publicada, não há o que puxar. Nesse cenário resta apenas o que já roda na VPS (os containers voltam sozinhos por restart policy após reboot). Publicar uma imagem NOVA manualmente exigiria buildar localmente e um `docker login` com um PAT `write:packages` — fora do escopo deste script. O caminho normal é sempre o **Run workflow** no GitHub.
 
+### Criar o login do CRM (uma única vez, após o primeiro deploy)
+
+O CRM (`gestao.…`) só tem **uma** usuária — a consultora — e ela nasce por um seed idempotente (rodar de novo com o mesmo e-mail só atualiza; também é o caminho para **trocar a senha**). Na VPS, com os containers de pé:
+
+```bash
+ssh deploy@IP_DA_VPS
+cd /opt/clientela
+
+# A senha é lida sem ecoar no terminal e SEM entrar no histórico do shell:
+read -rs SEED_CONSULTANT_PASSWORD && export SEED_CONSULTANT_PASSWORD
+export SEED_CONSULTANT_NAME="Lais Barbosa"
+export SEED_CONSULTANT_EMAIL="email-da-consultora@exemplo.com"
+export SEED_CONSULTANT_WHATSAPP="+5511912345678"   # com DDI
+
+IMAGE_TAG=$(cat .image-tag) docker compose run --rm \
+  -e SEED_CONSULTANT_NAME -e SEED_CONSULTANT_EMAIL \
+  -e SEED_CONSULTANT_PASSWORD -e SEED_CONSULTANT_WHATSAPP \
+  api bun scripts/seed-consultant.ts
+
+unset SEED_CONSULTANT_PASSWORD SEED_CONSULTANT_NAME SEED_CONSULTANT_EMAIL SEED_CONSULTANT_WHATSAPP
+```
+
+> Senha: mínimo 8 caracteres — use uma frase-senha forte (é a porta de todos os dados de clientes). As variáveis `SEED_*` **não** ficam no `.env` da VPS: passam só pelo ambiente do comando e são descartadas (`unset`) em seguida.
+
+Teste em seguida: `https://gestao.consultoralaisbarbosa.com.br` → redireciona para o login → entre com o e-mail e a senha do seed.
+
 ---
 
 ## 7. Verificação pós-deploy (checklist)
@@ -372,16 +411,26 @@ DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/opt/clientela ./scripts/deploy.sh     
 ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose ps"
 # → caddy/web/api/postgres "Up (healthy)"; portas publicadas SÓ no caddy (80/443)
 
-# Site no ar com HTTPS (e www funcionando):
+# Landing no ar com HTTPS (e www funcionando):
 curl -I https://consultoralaisbarbosa.com.br          # HTTP/2 200
 curl -I https://www.consultoralaisbarbosa.com.br      # HTTP/2 200
 curl -I http://consultoralaisbarbosa.com.br           # 308 → https (redirect automático)
+
+# CRM no ar (ADR-0017):
+curl -I https://gestao.consultoralaisbarbosa.com.br          # 302 → /crm (raiz redireciona)
+curl -I https://gestao.consultoralaisbarbosa.com.br/login    # HTTP/2 200 (página de login)
+curl -sI https://gestao.consultoralaisbarbosa.com.br/login | grep -i x-robots-tag   # noindex, nofollow
 
 # Nada além de 22/80/443 exposto:
 ssh deploy@IP_DA_VPS "sudo ss -tlnp | grep -v 127.0.0.1"
 ```
 
-**Teste funcional real** (o mais importante): abra o site no celular, confira as seções e o botão de WhatsApp (deve abrir conversa com o número certo), e **envie um lead de teste** pelo formulário. Depois confirme no banco:
+**Teste funcional real** (o mais importante):
+
+1. **Landing** — abra o site no celular, confira as seções e o botão de WhatsApp (deve abrir conversa com o número certo), e **envie um lead de teste** pelo formulário.
+2. **CRM** — em `https://gestao.consultoralaisbarbosa.com.br`: faça login (seed da seção 6), confira o **lead de teste na tela de Leads**, cadastre um produto, registre uma venda de teste e **cancele-a** (o estoque deve voltar), e crie/cancele um pedido de reposição. Saia (botão Sair) e confirme que voltar à URL do CRM exige login de novo.
+
+Conferência direto no banco (alternativa/reforço):
 
 ```bash
 ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
@@ -399,12 +448,47 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 | Subir/reiniciar tudo manualmente na VPS | `cd /opt/clientela && IMAGE_TAG=$(cat .image-tag) docker compose up -d` (usa a última tag puxada; sem isso o compose cairia em `latest`, que o deploy nunca publica de forma confiável) |
 | Ver logs | `docker compose logs -f web` (ou `api`, `caddy`, `postgres`) na VPS |
 | Reiniciar um serviço | `docker compose restart web` |
-| Ver leads capturados | o `psql` da seção 7 (até o CRM da Fase 2 existir) |
+| Ver leads capturados | no CRM: `https://gestao.consultoralaisbarbosa.com.br/crm/leads` (o `psql` da seção 7 segue como alternativa) |
+| Trocar a senha do CRM | rodar o seed de novo (seção 6, "Criar o login do CRM") — upsert idempotente pelo mesmo e-mail |
 | Backup manual do banco | `mkdir -p ~/backups && docker compose exec -T postgres pg_dump -U clientela clientela > ~/backups/backup-$(date +%F).sql` e **copie para fora da VPS** (`scp`). Grave em `~/backups/` (**fora de `/opt/clientela`**): o deploy nunca entra nesse diretório, mantendo os dumps totalmente isolados do pipeline de infra |
 
 > Após **reboot** da VPS os containers voltam sozinhos (restart policy `unless-stopped`) — sem `pull` (as imagens já estão locais). Só use o `up` manual acima se precisar recriar um container (ex.: depois de um `down`); ele lê a tag correta de `.image-tag`.
 
 > ⚠️ **Backup**: o backup automático externo é o **LP-13** e ainda não existe. Até lá, backup que fica só na VPS não é backup — rode o `pg_dump` acima e traga o arquivo para sua máquina sempre que houver leads novos importantes.
+
+### Analisar dados com DBeaver (túnel SSH)
+
+O Postgres não publica porta nenhuma — nem no localhost da VPS (só a rede interna do Docker). Para conectar uma ferramenta de análise (DBeaver, psql local etc.) **sem** expor o banco, publique-o apenas no **loopback da VPS** via um override local do compose (arquivo só da VPS: o deploy não o toca — o rsync não usa `--delete` — e ele nunca vai para o git):
+
+```bash
+# na VPS, uma única vez:
+cd /opt/clientela
+cat > docker-compose.override.yml <<'EOF'
+# Override LOCAL da VPS (não versionado): Postgres acessível SÓ do loopback da
+# própria VPS, para túnel SSH de análise (DBeaver). NUNCA remover o 127.0.0.1 —
+# sem ele a porta ficaria pública (e o UFW seria a única barreira).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+EOF
+IMAGE_TAG=$(cat .image-tag) docker compose up -d postgres   # recria só o postgres com a porta
+```
+
+No **DBeaver**, crie a conexão PostgreSQL com a aba **SSH** preenchida (o túnel é do próprio DBeaver — nada para digitar no terminal):
+
+| Aba | Campo | Valor |
+|---|---|---|
+| SSH | Host / Port | `IP_DA_VPS` / `22` |
+| SSH | User name | `deploy` |
+| SSH | Authentication | Public key → sua chave privada (`~/.ssh/id_ed25519`) |
+| Main | Host / Port | `localhost` / `5432` (via túnel) |
+| Main | Database / Username | `clientela` / `clientela` |
+| Main | Password | o `POSTGRES_PASSWORD` do `.env` da VPS |
+
+Alternativa sem DBeaver: `ssh -N -L 15432:127.0.0.1:5432 deploy@IP_DA_VPS` e conecte qualquer cliente em `localhost:15432`.
+
+> Segurança: o `127.0.0.1:` no override é o que mantém a porta **invisível de fora** (confira com o `ss -tlnp` da seção 7 — ela deve aparecer apenas em `127.0.0.1`); o acesso de fora continua existindo só via chave SSH. Para análise recorrente, considere criar um usuário **somente leitura** no banco e usá-lo no DBeaver — protege contra um UPDATE/DELETE acidental no meio de uma exploração: `docker compose exec postgres psql -U clientela -d clientela -c "CREATE ROLE analista LOGIN PASSWORD 'SENHA_FORTE'; GRANT CONNECT ON DATABASE clientela TO analista; GRANT USAGE ON SCHEMA public TO analista; GRANT SELECT ON ALL TABLES IN SCHEMA public TO analista; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO analista;"`
 
 ---
 
@@ -414,6 +498,8 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 |---|---|---|
 | Job de deploy falha em `Permission denied` / `Host key verification failed` no step SSH | Um dos 4 secrets está errado | Confira os 4 (seção 5.5): `DEPLOY_SSH_KEY` é a chave **privada** dedicada; `DEPLOY_KNOWN_HOSTS` foi capturada do **mesmo IP** de `DEPLOY_HOST`; a pública está no `authorized_keys` do `deploy` (passo 5.3) |
 | Site não abre / certificado não emite; logs do caddy com erros ACME | DNS ainda não propagou, ou porta 80 bloqueada | Confira `dig +short` (passo 1.3) e `sudo ufw status`; o Caddy fica em retry sozinho — resolvido o DNS, emite em minutos |
+| Landing abre mas `gestao.` não (ou sem certificado) | Registro A `gestao` faltando/não propagado, ou `CRM_DOMAIN` ausente no `.env` | `dig +short gestao.consultoralaisbarbosa.com.br` (passo 1) e confira `CRM_DOMAIN` no `.env` (passo 4); depois `docker compose restart caddy` |
+| Login do CRM diz credenciais inválidas | Seed da consultora nunca rodou (ou e-mail/senha diferentes do esperado) | Rode o seed (seção 6, "Criar o login do CRM") — idempotente; com o mesmo e-mail ele só redefine nome/senha/whatsapp |
 | `error: required variable POSTGRES_PASSWORD…` no deploy | `.env` da VPS ausente/incompleto | Revise o passo 4 (o script aponta o caminho exato) |
 | `error: required variable GHCR_OWNER…` / `docker login` falha na VPS | `GHCR_OWNER` ausente no `.env` da VPS | Adicione `GHCR_OWNER=seu_usuario` (minúsculas) ao `.env` (passo 4 / seção 3) |
 | Pull na VPS vem `denied` / `manifest unknown` | Permissão do token ou pacote ainda não vinculado ao repo | (1) O job `deploy` precisa de `permissions: packages: read` (já no `deploy.yml`); (2) o pacote GHCR nasce **privado, ligado ao repo** na 1ª publicação do `build-push` — confira em **GitHub → repo → Packages** se `clientela-web/-api/-migrate` existem e estão vinculados; (3) fallback manual exige PAT `read:packages` (seção 6) |
@@ -424,4 +510,4 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 
 ---
 
-*Documento do LP-12, atualizado no INF-05 (roadmap). Decisões relacionadas: ADR-0003 (VPS+Caddy), ADR-0008 (compose de produção; API interna), ADR-0009 (domínio), ADR-0010 (CI + deploy via GitHub Actions), ADR-0011 (deploy por imagens via GHCR — modelo pull). Primeiro deploy: me chame para assistir — em caso de qualquer saída estranha nos passos 6–7 (ou no primeiro run do Actions), cole o erro na conversa.*
+*Documento do LP-12, atualizado no INF-05 e no INF-06 (roadmap). Decisões relacionadas: ADR-0003 (VPS+Caddy), ADR-0008 (compose de produção; API interna), ADR-0009 (domínio), ADR-0010 (CI + deploy via GitHub Actions), ADR-0011 (deploy por imagens via GHCR — modelo pull), ADR-0017 (CRM em `gestao.*`). Primeiro deploy: me chame para assistir — em caso de qualquer saída estranha nos passos 6–7 (ou no primeiro run do Actions), cole o erro na conversa.*

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createLeadSchema, leadCaptureRequestSchema } from "./leads";
+import {
+  createLeadSchema,
+  crmLeadSchema,
+  leadCaptureRequestSchema,
+  leadsListQuerySchema,
+  updateLeadStatusSchema,
+} from "./leads";
 
 describe("createLeadSchema", () => {
   it("aceita lead válido e normaliza o whatsapp para dígitos", () => {
@@ -124,5 +130,97 @@ describe("leadCaptureRequestSchema", () => {
       consent: true,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("crmLeadSchema", () => {
+  const validLead = {
+    id: "018f8b3a-0000-7000-8000-000000000000",
+    name: "Maria Silva",
+    whatsapp: "11987654321",
+    interest: "Base líquida",
+    source: "landing",
+    status: "new",
+    clientId: null,
+    createdAt: "2026-07-18T12:00:00.000Z",
+  } as const;
+
+  it("aceita lead com clientId null (não convertido)", () => {
+    const result = crmLeadSchema.parse(validLead);
+    expect(result.clientId).toBeNull();
+    expect(result.status).toBe("new");
+  });
+
+  it("aceita lead convertido com clientId uuid preenchido", () => {
+    const result = crmLeadSchema.parse({
+      ...validLead,
+      status: "converted",
+      clientId: "018f8b3a-1111-7000-8000-000000000000",
+    });
+    expect(result.clientId).toBe("018f8b3a-1111-7000-8000-000000000000");
+  });
+
+  it("aceita interest null", () => {
+    const result = crmLeadSchema.parse({ ...validLead, interest: null });
+    expect(result.interest).toBeNull();
+  });
+
+  it("rejeita status fora do enum", () => {
+    const result = crmLeadSchema.safeParse({ ...validLead, status: "unknown" });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("leadsListQuerySchema", () => {
+  it("aplica defaults de paginação sem filtro de status", () => {
+    const result = leadsListQuerySchema.parse({});
+    expect(result).toEqual({ page: 1, perPage: 20 });
+  });
+
+  it("aceita filtro de status válido do enum", () => {
+    const result = leadsListQuerySchema.parse({ status: "contacted" });
+    expect(result.status).toBe("contacted");
+  });
+
+  it("rejeita status inválido com mensagem pt-BR", () => {
+    const result = leadsListQuerySchema.safeParse({ status: "banana" });
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    const message = result.error.issues[0]?.message ?? "";
+    expect(message).toBe("Status de lead inválido");
+    expect(message).not.toMatch(/invalid|expected|received|enum/i);
+  });
+});
+
+describe("updateLeadStatusSchema", () => {
+  it("aceita new, contacted e discarded", () => {
+    for (const status of ["new", "contacted", "discarded"] as const) {
+      const result = updateLeadStatusSchema.parse({ status });
+      expect(result.status).toBe(status);
+    }
+  });
+
+  it("rejeita 'converted' (não settável via PATCH) com mensagem pt-BR", () => {
+    const result = updateLeadStatusSchema.safeParse({ status: "converted" });
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    const message = result.error.issues[0]?.message ?? "";
+    expect(message).toBe("Status inválido: use novo, contatado ou descartado");
+    expect(message).not.toMatch(/invalid|expected|received|enum/i);
+  });
+
+  it("rejeita status ausente ({}) com mensagem pt-BR (lesson Zod v4)", () => {
+    const result = updateLeadStatusSchema.safeParse({});
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    const message = result.error.issues[0]?.message ?? "";
+    expect(message).toBe("Status inválido: use novo, contatado ou descartado");
+    expect(message).not.toMatch(/invalid|expected|received|enum/i);
   });
 });

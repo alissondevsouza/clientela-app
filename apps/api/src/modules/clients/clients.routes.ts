@@ -4,7 +4,7 @@ import {
   updateClientSchema,
 } from "@clientela/shared";
 import { Elysia } from "elysia";
-import { UnauthorizedError } from "../auth/auth.errors";
+import { createConsultantResolver, isUuid } from "../../lib/route-auth";
 import type { AuthService } from "../auth/auth.service";
 import { ClientNotFoundError } from "./clients.errors";
 import type { ClientsService } from "./clients.service";
@@ -13,23 +13,6 @@ const HTTP_CREATED = 201;
 const HTTP_NO_CONTENT = 204;
 
 const AUTHORIZATION_HEADER = "authorization";
-const BEARER_PREFIX = "Bearer ";
-
-// Formato uuid genérico (qualquer versão): o `:id` do banco é uuid v7, mas o
-// que importa aqui é rejeitar formato inválido antes de consultar o banco.
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Espelha `extractBearerToken` do auth-guard e do módulo auth: header ausente,
-// esquema diferente de Bearer ou token vazio ⇒ `null`.
-const extractBearerToken = (authorization: string | null): string | null => {
-  if (!authorization?.startsWith(BEARER_PREFIX)) {
-    return null;
-  }
-
-  const token = authorization.slice(BEARER_PREFIX.length).trim();
-  return token.length > 0 ? token : null;
-};
 
 export type ClientsRoutesDeps = {
   service: ClientsService;
@@ -46,23 +29,14 @@ export const createClientsRoutes = ({
   service,
   authService,
 }: ClientsRoutesDeps) => {
-  const resolveConsultantId = async (
-    authorization: string | null,
-  ): Promise<string> => {
-    const token = extractBearerToken(authorization);
-    if (!token) {
-      throw new UnauthorizedError();
-    }
-    const consultant = await authService.validateSession(token);
-    return consultant.id;
-  };
+  const resolveConsultantId = createConsultantResolver(authService);
 
   // `:id` malformado ⇒ `ClientNotFoundError` (404): a mesma resposta de
   // inexistente, para não vazar o formato interno do id (RF-05). Não usamos
   // schema de params do Elysia porque um id inválido viraria 422 — o contrato
   // aqui é 404.
   const requireValidId = (id: string): string => {
-    if (!UUID_REGEX.test(id)) {
+    if (!isUuid(id)) {
       throw new ClientNotFoundError();
     }
     return id;

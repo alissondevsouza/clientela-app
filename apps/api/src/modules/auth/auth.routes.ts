@@ -4,6 +4,7 @@ import {
   loginRequestSchema,
 } from "@clientela/shared";
 import { Elysia } from "elysia";
+import { extractBearerToken } from "../../lib/route-auth";
 import { type RateLimiter, resolveClientIp } from "../../plugins/rate-limit";
 import { UnauthorizedError } from "./auth.errors";
 import type { AuthService } from "./auth.service";
@@ -21,7 +22,6 @@ export const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const LOGIN_PATH = "/auth/login";
 const FORWARDED_FOR_HEADER = "x-forwarded-for";
 const AUTHORIZATION_HEADER = "authorization";
-const BEARER_PREFIX = "Bearer ";
 
 const RATE_LIMITED_CODE = "RATE_LIMITED";
 export const LOGIN_RATE_LIMITED_MESSAGE =
@@ -38,19 +38,6 @@ const TRAILING_SLASHES = /\/+$/;
 // que `/auth/login/` não escape do limite. A query já não faz parte do pathname.
 const matchesLoginPath = (pathname: string): boolean =>
   pathname.replace(TRAILING_SLASHES, "") === LOGIN_PATH;
-
-// Espelha `extractBearerToken` do auth-guard (Task 2.2): header ausente, esquema
-// diferente de Bearer ou token vazio ⇒ `null`. As rotas `/auth/me` e
-// `/auth/logout` tratam `null` como `UnauthorizedError` (o guard global já barra
-// antes na prática, mas a rota não depende disso — plan.md).
-const extractBearerToken = (authorization: string | null): string | null => {
-  if (!authorization?.startsWith(BEARER_PREFIX)) {
-    return null;
-  }
-
-  const token = authorization.slice(BEARER_PREFIX.length).trim();
-  return token.length > 0 ? token : null;
-};
 
 export type AuthRoutesDeps = {
   service: AuthService;

@@ -1,7 +1,35 @@
 import { z } from "zod";
+import { paginationQuerySchema } from "./pagination";
 import { whatsappSchema } from "./whatsapp-validation";
 
 const INTEREST_MAX_LENGTH = 500;
+
+const STATUS_INVALID_MESSAGE = "Status de lead inválido";
+const STATUS_UPDATE_INVALID_MESSAGE =
+  "Status inválido: use novo, contatado ou descartado";
+
+// Fonte única dos status do funil de lead (core.md: literal único). O schema
+// Drizzle importa daqui (o web precisa do enum para filtro/labels e não pode
+// importar de `db/`). `converted` só é atingível via conversão (POST convert),
+// nunca por PATCH de status — daí o subconjunto `LEAD_STATUS_UPDATE_VALUES`.
+export const leadStatusValues = [
+  "new",
+  "contacted",
+  "converted",
+  "discarded",
+] as const;
+
+export type LeadStatus = (typeof leadStatusValues)[number];
+
+// Status settáveis via PATCH: exclui `converted` (invariante do vínculo
+// Lead 1—0..1 Client — converter é operação atômica própria).
+export const leadStatusUpdateValues = [
+  "new",
+  "contacted",
+  "discarded",
+] as const;
+
+export type LeadStatusUpdate = (typeof leadStatusUpdateValues)[number];
 
 export const createLeadSchema = z.object({
   // `error` no nível do `z.string()` cobre também o `invalid_type` de campo
@@ -45,3 +73,43 @@ export type LeadCaptureRequest = z.output<typeof leadCaptureRequestSchema>;
 
 // Resposta de sucesso da captura: apenas o id, nunca ecoa dado pessoal.
 export type LeadCaptureResponse = { id: string };
+
+// Contrato de resposta do lead no CRM (fronteira de saída da API → front).
+// `clientId` nullable reflete o vínculo opcional com a cliente (RF-01: lead
+// convertido cuja cliente foi excluída fica com `client_id` NULL). Datas em ISO.
+export const crmLeadSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  whatsapp: z.string(),
+  interest: z.string().nullable(),
+  source: z.string(),
+  status: z.enum(leadStatusValues, { error: STATUS_INVALID_MESSAGE }),
+  clientId: z.uuid().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export type CrmLead = z.infer<typeof crmLeadSchema>;
+
+// Query da listagem autenticada: paginação padrão + filtro `?status=` opcional
+// pelo enum (valor inválido rejeitado em pt-BR).
+export const leadsListQuerySchema = paginationQuerySchema.extend({
+  status: z
+    .enum(leadStatusValues, { error: STATUS_INVALID_MESSAGE })
+    .optional(),
+});
+
+export type LeadsListQueryInput = z.input<typeof leadsListQuerySchema>;
+export type LeadsListQuery = z.output<typeof leadsListQuerySchema>;
+
+// PATCH de status: só `new`/`contacted`/`discarded` — `converted` não é
+// settável (invariante do vínculo). `error` no nível do enum cobre tanto valor
+// inválido quanto campo ausente em pt-BR (lesson Zod v4: sem isso, `{}` cai no
+// `invalid_type` com mensagem default em inglês).
+export const updateLeadStatusSchema = z.object({
+  status: z.enum(leadStatusUpdateValues, {
+    error: STATUS_UPDATE_INVALID_MESSAGE,
+  }),
+});
+
+export type UpdateLeadStatusInput = z.input<typeof updateLeadStatusSchema>;
+export type UpdateLeadStatus = z.output<typeof updateLeadStatusSchema>;

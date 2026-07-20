@@ -9,3 +9,14 @@
 {$DOMAIN} {
 	reverse_proxy web:3000
 }
+
+# CRM ({$CRM_DOMAIN}, ADR-0017): mesmo app web, separado por host — a raiz do
+# subdomínio leva direto ao CRM. Redirect temporário (302): se o CRM um dia for
+# servido na raiz do subdomínio, nenhum browser fica preso a um 308 em cache.
+# As páginas do CRM já são noindex via metadata; o header reforça para TODA
+# resposta deste host (inclusive /login e assets).
+{$CRM_DOMAIN} {
+	header X-Robots-Tag "noindex, nofollow"
+	redir / /crm temporary
+	reverse_proxy web:3000
+}

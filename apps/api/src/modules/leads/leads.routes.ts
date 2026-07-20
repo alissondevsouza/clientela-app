@@ -7,6 +7,7 @@ const HTTP_CREATED = 201;
 const HTTP_TOO_MANY_REQUESTS = 429;
 
 const LEADS_PATH = "/leads";
+const CAPTURE_METHOD = "POST";
 const FORWARDED_FOR_HEADER = "x-forwarded-for";
 
 const RATE_LIMITED_CODE = "RATE_LIMITED";
@@ -19,13 +20,21 @@ const rateLimitError: ApiError = {
 
 const TRAILING_SLASHES = /\/+$/;
 
+// O rate limit é exclusivo do endpoint público de captura: `POST /leads`. Só
+// esse par (método, path) consome o bucket do visitante. `GET /leads`,
+// `PATCH /leads/:id/status`, `POST /leads/:id/convert` e demais rotas
+// autenticadas do CRM-04 compartilham o prefixo `/leads`, mas NÃO podem cair no
+// limite do visitante (RF-05 — fecha o known-issue "rate limit cobre qualquer
+// método").
+//
 // O roteador do Elysia (strictPath desligado por default) entrega tanto `/leads`
 // quanto `/leads/` — e `/leads/?x=1` — ao mesmo handler. Como o rate limit roda
-// num hook global (`onRequest`, antes do roteamento), comparar o pathname por
-// igualdade exata deixava `/leads/` escapar do limite. Normalizamos removendo as
-// barras finais (o pathname já exclui a query string) para que TODA variante de
-// URL que alcança a rota seja limitada — sem afetar `/health` ou outras rotas.
-const matchesLeadsPath = (pathname: string): boolean =>
+// num hook (`onRequest`, antes do roteamento), comparar o pathname por igualdade
+// exata deixava `/leads/` escapar do limite. Normalizamos removendo as barras
+// finais (o pathname já exclui a query string) para que TODA variante de URL do
+// POST de captura seja limitada — e só ela.
+const isPublicLeadCapture = (method: string, pathname: string): boolean =>
+  method === CAPTURE_METHOD &&
   pathname.replace(TRAILING_SLASHES, "") === LEADS_PATH;
 
 export type LeadsRoutesDeps = {
@@ -41,12 +50,13 @@ export type LeadsRoutesDeps = {
 // validação do body): assim payload inválido também consome a janela e um flood
 // de 422 acaba recebendo 429 (RF-05). `beforeHandle` rodaria depois da
 // validação (comprovado empiricamente), deixando bodies inválidos escaparem do
-// limite. Como `onRequest` dispara antes do roteamento (é global), a guarda por
-// path restringe o limite ao endpoint público `/leads`, sem afetar `/health`.
+// limite. Como `onRequest` dispara antes do roteamento, a guarda por (método,
+// path) restringe o limite ao `POST /leads` público — sem afetar `/health` nem
+// as rotas autenticadas de leads do CRM-04.
 export const createLeadsRoutes = ({ service, rateLimiter }: LeadsRoutesDeps) =>
   new Elysia()
     .onRequest(({ request, server, set }) => {
-      if (!matchesLeadsPath(new URL(request.url).pathname)) {
+      if (!isPublicLeadCapture(request.method, new URL(request.url).pathname)) {
         return;
       }
 

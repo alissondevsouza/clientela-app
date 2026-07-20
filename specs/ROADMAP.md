@@ -44,17 +44,17 @@
 
 ### Base técnica
 
-- [R] **LP-01** → `specs/dev-db-drizzle-leads` — Banco local de desenvolvimento: `docker-compose.dev.yml` com Postgres + setup Drizzle na API (`drizzle-kit`, client, convenções de `database.md`) + migração inicial com tabela `leads` (com `consent_at`) — _dep: nenhuma_
-- [R] **LP-02** → `specs/leads-capture-api` — API: módulo `leads` — `POST /leads` público com schema de `packages/shared`, rate limit por IP, honeypot anti-bot, persistência; testes de integração com Testcontainers — _dep: LP-01_
+- [x] **LP-01** → `specs/dev-db-drizzle-leads` — Banco local de desenvolvimento: `docker-compose.dev.yml` com Postgres + setup Drizzle na API (`drizzle-kit`, client, convenções de `database.md`) + migração inicial com tabela `leads` (com `consent_at`) — _dep: nenhuma_
+- [x] **LP-02** → `specs/leads-capture-api` — API: módulo `leads` — `POST /leads` público com schema de `packages/shared`, rate limit por IP, honeypot anti-bot, persistência; testes de integração com Testcontainers — _dep: LP-01_
 
 ### Página
 
-- [R] **LP-03** → `specs/landing-page-structure` — Estrutura da landing: layout mobile-first com seções hero (foto + proposta + CTA WhatsApp), sobre a consultora e depoimentos — conteúdo placeholder; shadcn/ui instalado e configurado — _dep: nenhuma_
-- [R] **LP-04** → `specs/whatsapp-cta` — Componente WhatsApp CTA: link `wa.me` com mensagem pré-preenchida parametrizável (número/mensagem via env/config) — _dep: LP-03_
-- [R] **LP-05** → `specs/featured-catalog` — Catálogo de destaque: cards de produto (foto, nome, preço) com "Pedir pelo WhatsApp" pré-preenchendo o nome do produto; dados estáticos em config nesta fase (o CRM alimentará depois) — _dep: LP-04_
-- [R] **LP-06** → `specs/lead-capture-form` — Formulário de captura de lead com isca de conversão: react-hook-form + schema compartilhado, consentimento LGPD explícito, server action → API, estados de sucesso/erro — _dep: LP-02, LP-03_
-- [R] **LP-07** → `specs/landing-seo-polish` — SEO e polimento: `generateMetadata`, Open Graph, sitemap/robots, imagens via `next/image`, passe de performance (Lighthouse) e acessibilidade — _dep: LP-03..LP-06_
-- [R] **LP-14** → `specs/landing-visual-refinement` — Refinamento visual da landing: header fixo, marca "Lais Barbosa", fotos reais (`project-memory/UI-resources`, autorizadas pelo humano), melhoria das seções de depoimentos e contato, animações CSS — _dep: LP-07_
+- [x] **LP-03** → `specs/landing-page-structure` — Estrutura da landing: layout mobile-first com seções hero (foto + proposta + CTA WhatsApp), sobre a consultora e depoimentos — conteúdo placeholder; shadcn/ui instalado e configurado — _dep: nenhuma_
+- [x] **LP-04** → `specs/whatsapp-cta` — Componente WhatsApp CTA: link `wa.me` com mensagem pré-preenchida parametrizável (número/mensagem via env/config) — _dep: LP-03_
+- [x] **LP-05** → `specs/featured-catalog` — Catálogo de destaque: cards de produto (foto, nome, preço) com "Pedir pelo WhatsApp" pré-preenchendo o nome do produto; dados estáticos em config nesta fase (o CRM alimentará depois) — _dep: LP-04_
+- [x] **LP-06** → `specs/lead-capture-form` — Formulário de captura de lead com isca de conversão: react-hook-form + schema compartilhado, consentimento LGPD explícito, server action → API, estados de sucesso/erro — _dep: LP-02, LP-03_
+- [x] **LP-07** → `specs/landing-seo-polish` — SEO e polimento: `generateMetadata`, Open Graph, sitemap/robots, imagens via `next/image`, passe de performance (Lighthouse) e acessibilidade — _dep: LP-03..LP-06_
+- [x] **LP-14** → `specs/landing-visual-refinement` — Refinamento visual da landing: header fixo, marca "Lais Barbosa", fotos reais (`project-memory/UI-resources`, autorizadas pelo humano), melhoria das seções de depoimentos e contato, animações CSS — _dep: LP-07_
 
 ### Conteúdo e conformidade (humano)
 
@@ -64,7 +64,7 @@
 
 ### No ar
 
-- [R] **LP-11** → `specs/production-deploy` — Deploy: Dockerfiles (web standalone, api), `docker-compose.yml` de produção com Caddy (HTTPS automático) + Postgres com volume; script de deploy via SSH — _dep: LP-01..LP-07_
+- [x] **LP-11** → `specs/production-deploy` — Deploy: Dockerfiles (web standalone, api), `docker-compose.yml` de produção com Caddy (HTTPS automático) + Postgres com volume; script de deploy via SSH — _dep: LP-01..LP-07_
 - [>] **LP-12** `(humano)` — Provisionar VPS (Hostinger), apontar DNS, rodar primeiro deploy com o agente assistindo — VPS KVM 2 e domínio comprados (2026-07-17); guia passo a passo entregue em `docs/deploy-vps.md`; falta executar o primeiro deploy
 - [ ] **LP-13** — Backup diário do Postgres para fora da VPS (destino a decidir — gera ADR) — _dep: LP-12_
 
@@ -72,14 +72,16 @@
 
 > Objetivo: substituir caderno/planilha. Invariantes do domínio: `project-memory/04-domain-model.md`.
 
-- [R] **CRM-01** → `specs/crm-auth` — ADR + implementação de autenticação (usuária única): login, sessão, guard das rotas da API e do grupo `(crm)` no web — _dep: LP-01_ — ADR-0012; handoff 2026-07-17
-- [R] **CRM-02** → `specs/crm-layout` — Layout do CRM: navegação mobile-first do grupo `(crm)`, shell autenticado — _dep: CRM-01_ — handoff 2026-07-17
-- [R] **CRM-03** → `specs/crm-clients` — Clientes: CRUD com campos do domínio (aniversário, tom de pele, observações), busca, botão WhatsApp — _dep: CRM-02_ — handoff 2026-07-18 (BUG-001/002 registrados)
-- [ ] **CRM-04** — Leads no CRM: lista dos capturados na landing, status (novo → contatado → convertido/descartado), conversão lead → cliente — _dep: CRM-02_
-- [ ] **CRM-05** — Produtos & estoque: CRUD com custo/preço em centavos, quantidade, alerta de estoque baixo, capital parado — _dep: CRM-02_
-- [ ] **CRM-06** — Vendas: registro com itens, baixa atômica de estoque, formas de pagamento, fiado/parcelado com recebíveis e baixa de pagamento ("quem me deve") — _dep: CRM-03, CRM-05_
-- [ ] **CRM-07** — Dashboard: vendas do mês, lucro estimado, a receber, meta mensal — _dep: CRM-06_
+- [x] **CRM-01** → `specs/crm-auth` — ADR + implementação de autenticação (usuária única): login, sessão, guard das rotas da API e do grupo `(crm)` no web — _dep: LP-01_ — ADR-0012; handoff 2026-07-17
+- [x] **CRM-02** → `specs/crm-layout` — Layout do CRM: navegação mobile-first do grupo `(crm)`, shell autenticado — _dep: CRM-01_ — handoff 2026-07-17
+- [x] **CRM-03** → `specs/crm-clients` — Clientes: CRUD com campos do domínio (aniversário, tom de pele, observações), busca, botão WhatsApp — _dep: CRM-02_ — handoff 2026-07-18 (BUG-001/002 registrados)
+- [R] **CRM-04** → `specs/crm-leads` — Leads no CRM: lista dos capturados na landing, status (novo → contatado → convertido/descartado), conversão lead → cliente — _dep: CRM-02_ — handoff 2026-07-18 (fecha known-issue do rate limit; BUG-003 registrado)
+- [R] **CRM-05** → `specs/crm-products` — Produtos & estoque: CRUD com custo/preço em centavos, quantidade, alerta de estoque baixo, capital parado — _dep: CRM-02_ — handoff 2026-07-18 (QA 2 rodadas: CRÍTICO de RSC×client corrigido; lesson graduada)
+- [R] **CRM-06** → `specs/crm-sales` — Vendas: registro com itens, baixa atômica de estoque, formas de pagamento, fiado/parcelado com recebíveis e baixa de pagamento ("quem me deve") — _dep: CRM-03, CRM-05_ — handoff 2026-07-18 (ADR-0013; fecha known-issue LGPD×vendas; BUG-004/005 registrados)
+- [R] **CRM-07** → `specs/crm-dashboard` — Dashboard: vendas do mês, lucro estimado, a receber, meta mensal — _dep: CRM-06_ — handoff 2026-07-19 (ADR-0014 snapshot de custo/lucro/meta; QA APROVADO 674 testes; size L)
 - [ ] **CRM-08** — Catálogo da landing alimentado pelos produtos do CRM (flag "destaque") — _dep: CRM-05_
+- [R] **CRM-09** → `specs/crm-orders` — Pedidos de reposição: controle do que a consultora precisa pedir à Mary Kay, com ciclo de status (rascunho → pedido → entregue / cancelado), itens vinculados a produtos, sugestão a partir do estoque baixo e entrada atômica de estoque na entrega — _dep: CRM-05_ — handoff 2026-07-20 (ADR-0015; QA APROVADO rodada 1, 784 testes)
+- [R] **CRM-10** → `specs/order-item-client-link` — Encomendas de clientes no pedido: vínculo opcional de cliente por item (join derivado, sem snapshot — ADR-0016), cadastro rápido de cliente no form (nome + WhatsApp) e visão "para quem é" no detalhe — _dep: CRM-03, CRM-09_ — handoff 2026-07-20 (ADR-0016; QA APROVADO rodada 1, 807 testes, runtime provado)
 
 ## Fase 3 — Relacionamento
 
@@ -98,8 +100,9 @@
 
 ## Infra contínua (sem fase — quando o gatilho disparar)
 
-- [R] **INF-01** → `specs/github-actions-ci-deploy` — CI (lint + typecheck + testes) quando houver remote — _gatilho disparado: humano vai publicar o repo no GitHub (2026-07-17)_
-- [R] **INF-04** → `specs/github-actions-ci-deploy` — Deploy contínuo via GitHub Actions (push na `main` → CI → deploy SSH na VPS), substituindo o deploy manual da máquina local (decisão do humano; gera ADR) — _dep: INF-01, LP-11_
+- [x] **INF-01** → `specs/github-actions-ci-deploy` — CI (lint + typecheck + testes) quando houver remote — _gatilho disparado: humano vai publicar o repo no GitHub (2026-07-17)_
+- [x] **INF-04** → `specs/github-actions-ci-deploy` — Deploy contínuo via GitHub Actions (push na `main` → CI → deploy SSH na VPS), substituindo o deploy manual da máquina local (decisão do humano; gera ADR) — _dep: INF-01, LP-11_
 - [ ] **INF-02** — `linker: "isolated"` no Bun — _gatilho: segundo bug de phantom dependency_
 - [ ] **INF-03** — Turborepo — _gatilho: pipeline > 2–3 min ou > 5 packages_
-- [R] **INF-05** → `specs/ghcr-image-deploy` — Deploy por imagens via GHCR: pipeline builda e publica (`web`/`api`/`migrate`), VPS só faz pull+up — servidor fica apenas com arquivos de infra (pedido do humano; gera ADR que substitui parte do 0010) — _dep: INF-04_
+- [R] **INF-06** — Split de domínios para produção: landing na raiz + CRM em `gestao.*` (Caddy por host, env `CRM_DOMAIN`, seed da consultora em produção, guia de deploy atualizado — ADR-0017) — pedido do humano em 2026-07-20; edição direta (docs/infra)
+- [x] **INF-05** → `specs/ghcr-image-deploy` — Deploy por imagens via GHCR: pipeline builda e publica (`web`/`api`/`migrate`), VPS só faz pull+up — servidor fica apenas com arquivos de infra (pedido do humano; gera ADR que substitui parte do 0010) — _dep: INF-04_

@@ -1,5 +1,6 @@
 import type { ApiError } from "@clientela/shared";
 import { Elysia } from "elysia";
+import { extractBearerToken } from "../lib/route-auth";
 import { UnauthorizedError } from "../modules/auth/auth.errors";
 import type { AuthService } from "../modules/auth/auth.service";
 
@@ -15,7 +16,6 @@ const unauthorizedError: ApiError = {
 };
 
 const AUTHORIZATION_HEADER = "authorization";
-const BEARER_PREFIX = "Bearer ";
 
 const TRAILING_SLASHES = /\/+$/;
 
@@ -54,17 +54,6 @@ export const isPublicRoute = (
       route.method.toUpperCase() === normalizedMethod &&
       route.path.replace(TRAILING_SLASHES, "") === normalizedPath,
   );
-};
-
-// Extrai o token do header `Authorization: Bearer <token>`. Header ausente,
-// esquema diferente de Bearer ou token vazio ⇒ `null` (tratado como 401).
-const extractBearerToken = (authorization: string | null): string | null => {
-  if (!authorization?.startsWith(BEARER_PREFIX)) {
-    return null;
-  }
-
-  const token = authorization.slice(BEARER_PREFIX.length).trim();
-  return token.length > 0 ? token : null;
 };
 
 export type AuthGuardDeps = {

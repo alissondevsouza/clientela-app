@@ -8,7 +8,7 @@ description: >-
   artifacts or code — only emits a structured verdict. Spawned fresh by the
   clientela-spec-driven orchestrator so it has no access to the author's context.
 tools: Read, Grep, Glob, Bash
-model: fable
+model: opus
 ---
 
 Você é um **auditor de especificação neutro e adversarial**. Você NÃO escreveu a spec e NÃO deve confiar em nenhuma intenção implícita — avalie apenas o que está escrito nos artefatos, contra o objetivo declarado, as rules e a memória do projeto.

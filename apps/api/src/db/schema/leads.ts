@@ -1,14 +1,14 @@
+import { type LeadStatus, leadStatusValues } from "@clientela/shared";
 import { sql } from "drizzle-orm";
-import { check, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
-
-export const leadStatusValues = [
-  "new",
-  "contacted",
-  "converted",
-  "discarded",
-] as const;
-
-export type LeadStatus = (typeof leadStatusValues)[number];
+import {
+  check,
+  index,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
+import { clients } from "./clients";
 
 const DEFAULT_LEAD_STATUS: LeadStatus = "new";
 const DEFAULT_LEAD_SOURCE = "landing";
@@ -29,6 +29,13 @@ export const leads = pgTable(
       .notNull()
       .default(DEFAULT_LEAD_STATUS),
     consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
+    // Vínculo com a cliente criada na conversão do lead. Nullable: lead ainda não
+    // convertido (sem cliente) e também lead convertido cuja cliente foi excluída
+    // depois (LGPD apaga a cliente; o lead é histórico de captação e sobrevive —
+    // onDelete set null desfaz só o vínculo). Ver RF-01/spec.
+    clientId: uuid("client_id").references(() => clients.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -46,6 +53,9 @@ export const leads = pgTable(
       "leads_status_check",
       sql`${table.status} IN (${statusCheckLiterals})`,
     ),
+    // Postgres não indexa FK automaticamente (database.md): índice para o lookup
+    // de leads pela cliente vinculada.
+    index("leads_client_id_idx").on(table.clientId),
   ],
 );
 

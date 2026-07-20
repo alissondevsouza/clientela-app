@@ -25,8 +25,16 @@ import {
 } from "../../plugins/rate-limit";
 import { createClientsRepository } from "../clients/clients.repository";
 import { createClientsService } from "../clients/clients.service";
+import { createDashboardRepository } from "../dashboard/dashboard.repository";
+import { createDashboardService } from "../dashboard/dashboard.service";
 import { createLeadsRepository } from "../leads/leads.repository";
 import { createLeadsService } from "../leads/leads.service";
+import { createOrdersRepository } from "../orders/orders.repository";
+import { createOrdersService } from "../orders/orders.service";
+import { createProductsRepository } from "../products/products.repository";
+import { createProductsService } from "../products/products.service";
+import { createSalesRepository } from "../sales/sales.repository";
+import { createSalesService } from "../sales/sales.service";
 import { createAuthRepository } from "./auth.repository";
 import {
   LOGIN_RATE_LIMIT_MAX,
@@ -164,12 +172,29 @@ describe("auth (integração)", () => {
     const clientsService = createClientsService({
       repository: createClientsRepository(ctx.db),
     });
+    const productsService = createProductsService({
+      repository: createProductsRepository(ctx.db),
+    });
+    const salesService = createSalesService({
+      repository: createSalesRepository(ctx.db),
+    });
+    const ordersService = createOrdersService({
+      repository: createOrdersRepository(ctx.db),
+    });
+    const dashboardService = createDashboardService({
+      repository: createDashboardRepository(ctx.db),
+      clock: () => new Date(),
+    });
     return createApp({
       leadsService,
       rateLimiter,
       authService,
       loginRateLimiter,
       clientsService,
+      productsService,
+      salesService,
+      ordersService,
+      dashboardService,
     });
   };
 

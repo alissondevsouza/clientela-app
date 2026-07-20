@@ -1,4 +1,5 @@
-# Orquestração de PRODUÇÃO (Fase 1: landing + captura de lead).
+# Orquestração de PRODUÇÃO (landing + captura de lead + CRM autenticado).
+# Domínios: DOMAIN (landing, raiz + www) e CRM_DOMAIN (gestao.*) — ADR-0017.
 #
 # Exposição pública: SOMENTE o Caddy publica portas (80/443). Web, API e
 # Postgres ficam apenas na rede interna do compose — o browser nunca fala com a
@@ -20,6 +21,9 @@ services:
       - "${CADDY_HTTPS_PORT:-443}:443"
     environment:
       DOMAIN: "${DOMAIN:?defina DOMAIN no .env (ex. https://seudominio.com ou http://localhost para smoke)}"
+      # Host do CRM (ADR-0017). Smoke local: http://crm.localhost (mesmo :80,
+      # resolvido por host — *.localhost aponta para 127.0.0.1).
+      CRM_DOMAIN: "${CRM_DOMAIN:?defina CRM_DOMAIN no .env (ex. gestao.seudominio.com ou http://crm.localhost para smoke)}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

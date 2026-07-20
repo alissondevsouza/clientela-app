@@ -11,6 +11,22 @@ Formato:
 
 ---
 
+## 2026-07-20 — UPDATE condicional não serializa a corrida quando o guard é superconjunto do estado-alvo do rival (EvalPlanQual)
+
+O padrão "UPDATE condicional de status como primeira escrita da transação" (usado em sales e orders) parece garantir que, entre duas transições concorrentes, só uma vence. Não garante: sob `READ COMMITTED`, a transação que perde o lock **reavalia o WHERE contra a linha já commitada** (EvalPlanQual) — se o guard dela ainda casar com o novo estado, ela também aplica. Foi o caso de `cancel` (guard `status IN ('draft','placed')`) × `place` (alvo `placed`): o cancel bloqueado reavalia, `placed` está no conjunto, e ambos retornam 200. Só há exclusividade real quando o guard do perdedor exige um estado que o vencedor invalida (ex.: `deliver` exige `placed`, que outro `deliver` remove). Regra prática: ao desenhar matriz de transições concorrentes, verifique se algum guard é **superconjunto** do estado-alvo de outra transição — se for e houver efeito colateral, precisa de lock/versão; se não houver efeito, pode ser aceito como história serial legal (documentar — ADR-0015). Detectar: teste de integração com `Promise.all` das duas transições, rodado múltiplas vezes.
+
+## 2026-07-19 — Prop de função para Client Component só aceita a referência DIRETA da Server Action, não um closure
+
+Ao passar uma Server Action como prop para um Client Component, só a **própria referência** exportada com `"use server"` é serializável através da fronteira RSC→client. Envolvê-la num closure adaptador no Server Component (ex.: `onUpdateGoal={(cents) => updateGoalAction({ monthlyGoalCents: cents })}` para ajustar o shape) quebra: um closure comum criado no RSC não é uma referência de action serializável. Correção (CRM-07): passar `updateGoalAction` direto e mover a adaptação de shape para DENTRO do client component — exatamente o padrão de `product-form.tsx` (recebe `createProductAction`/`updateProductAction` direto). Detectar: o `next build` de produção acusa (foi onde caiu no CRM-07); a lesson de RSC×client abaixo cobre o caso irmão (chamar export de módulo client no servidor).
+
+## 2026-07-18 — Chamar no servidor uma função exportada de módulo "use client" só quebra em RUNTIME
+
+Um RSC pode importar de um módulo `"use client"` sem erro de typecheck, lint ou `next build` — mas CHAMAR qualquer função exportada de lá no servidor lança em runtime ("Attempted to call X() from the server but X is on the client"), derrubando a página inteira no error boundary. Pego só pela QA de runtime do CRM-05 (474 testes verdes não acusaram). Regra prática: helper puro compartilhado entre RSC e client component vive em `lib/` (módulo sem diretiva), nunca exportado de um componente client. Detectar: exercitar cada page RSC nova com servidor real (build de produção) antes do handoff.
+
+## 2026-07-18 — Server Action só é exercitável por HTTP cru no build de produção
+
+Para provar uma Server Action fim-a-fim sem browser (curl com header `next-action: <id>`), use `next build` + `next start`: no dev/Turbopack os ids do manifest de actions divergem entre requests e o POST cru falha. No build de produção os ids são estáveis (extraíveis do HTML/manifest). Usado na QA do CRM-04 para provar conversão (303 + `x-action-redirect`) e ações de status.
+
 ## 2026-07-18 — Elysia 1.4: handler que retorna `undefined` (ex.: 204) lança TypeError na serialização
 
 `set.status = 204` + retorno implícito `undefined` derruba o request com `TypeError` no serializador (vira 500 via error-handler). Para respostas sem corpo, retornar `new Response(null, { status: 204 })` explícita. Detectar: teste de integração do DELETE (o bug passou por typecheck/lint e só caiu no teste derivado do spec — o unit do service não cobre a rota).

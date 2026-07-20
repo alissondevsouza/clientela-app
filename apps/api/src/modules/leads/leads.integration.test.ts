@@ -22,9 +22,29 @@ import {
   type ClientsRepositoryPort,
   createClientsService,
 } from "../clients/clients.service";
+import {
+  createDashboardService,
+  type DashboardRepositoryPort,
+} from "../dashboard/dashboard.service";
+import {
+  createOrdersService,
+  type OrdersRepositoryPort,
+} from "../orders/orders.service";
+import {
+  createProductsService,
+  type ProductsRepositoryPort,
+} from "../products/products.service";
+import {
+  createSalesService,
+  type SalesRepositoryPort,
+} from "../sales/sales.service";
 import { createLeadsRepository } from "./leads.repository";
-import { RATE_LIMITED_MESSAGE } from "./leads.routes";
+import { createLeadsRoutes, RATE_LIMITED_MESSAGE } from "./leads.routes";
 import { createLeadsService } from "./leads.service";
+
+// Ambos `createApp` e `createLeadsRoutes` são instâncias Elysia com `.handle`;
+// os helpers de request aceitam qualquer um dos dois.
+type Handleable = { handle: (request: Request) => Promise<Response> };
 
 const CONTAINER_STARTUP_TIMEOUT_MS = 120_000;
 // Ids persistidos vêm do banco (uuid v7). O id sintético do honeypot vem de
@@ -75,6 +95,82 @@ const noopClientsRepository: ClientsRepositoryPort = {
   list: async () => ({ rows: [], total: 0 }),
 };
 
+// Products em memória: este arquivo só exercita `/leads` e `/health` — nenhuma
+// rota autenticada de products é chamada. O fake só satisfaz o `createApp`.
+const noopProductsRepository: ProductsRepositoryPort = {
+  insert: async () => {
+    throw new Error("products não é exercitado neste teste");
+  },
+  findById: async () => undefined,
+  update: async () => undefined,
+  delete: async () => false,
+  list: async () => ({ rows: [], total: 0 }),
+  summary: async () => ({
+    stockCostCents: 0,
+    stockPriceCents: 0,
+    lowStockCount: 0,
+  }),
+};
+
+// Sales em memória: este arquivo só exercita `/leads` e `/health` — nenhuma rota
+// autenticada de sales é chamada. O fake só satisfaz o `createApp`.
+const noopSalesRepository: SalesRepositoryPort = {
+  findProductsByIds: async () => [],
+  createSale: async () => {
+    throw new Error("sales não é exercitado neste teste");
+  },
+  list: async () => ({ rows: [], total: 0 }),
+  getById: async () => undefined,
+  cancel: async () => {
+    throw new Error("sales não é exercitado neste teste");
+  },
+  listReceivables: async () => ({ rows: [], total: 0 }),
+  receivablesSummary: async () => ({
+    pendingCents: 0,
+    overdueCents: 0,
+    overdueCount: 0,
+  }),
+  setReceivablePaid: async () => {
+    throw new Error("sales não é exercitado neste teste");
+  },
+};
+
+// Orders em memória: este arquivo só exercita `/leads` e `/health` — nenhuma
+// rota autenticada de orders é chamada. O fake só satisfaz o `createApp`.
+const noopOrdersRepository: OrdersRepositoryPort = {
+  findProductsByIds: async () => [],
+  findClientsByIds: async () => [],
+  createOrder: async () => {
+    throw new Error("orders não é exercitado neste teste");
+  },
+  replaceItems: async () => {
+    throw new Error("orders não é exercitado neste teste");
+  },
+  list: async () => ({ rows: [], total: 0 }),
+  getById: async () => undefined,
+  place: async () => {
+    throw new Error("orders não é exercitado neste teste");
+  },
+  deliver: async () => {
+    throw new Error("orders não é exercitado neste teste");
+  },
+  cancel: async () => {
+    throw new Error("orders não é exercitado neste teste");
+  },
+};
+
+// Dashboard em memória: este arquivo só exercita `/leads` e `/health` —
+// nenhuma rota autenticada de dashboard é chamada. O fake só satisfaz o
+// `createApp`.
+const noopDashboardRepository: DashboardRepositoryPort = {
+  summary: async () => {
+    throw new Error("dashboard não é exercitado neste teste");
+  },
+  updateGoal: async () => {
+    throw new Error("dashboard não é exercitado neste teste");
+  },
+};
+
 const buildNoopAuthDeps = () => ({
   authService: createAuthService({
     repository: noopAuthRepository,
@@ -89,6 +185,19 @@ const buildNoopAuthDeps = () => ({
   }),
   clientsService: createClientsService({
     repository: noopClientsRepository,
+  }),
+  productsService: createProductsService({
+    repository: noopProductsRepository,
+  }),
+  salesService: createSalesService({
+    repository: noopSalesRepository,
+  }),
+  ordersService: createOrdersService({
+    repository: noopOrdersRepository,
+  }),
+  dashboardService: createDashboardService({
+    repository: noopDashboardRepository,
+    clock: () => new Date(),
   }),
 });
 
@@ -128,8 +237,27 @@ describe("POST /leads (integração)", () => {
     });
   };
 
+  // Plugin público de leads isolado (sem o auth-guard global). O guard de rate
+  // limit vive aqui: testá-lo direto exercita exatamente o ponto que o
+  // known-issue reporta (limite método-agnóstico). No app composto o auth-guard
+  // 401aria um GET anônimo antes de o guard de leads rodar, mascarando o escopo.
+  const buildLeadsPlugin = (): Handleable => {
+    const repository = createLeadsRepository(ctx.db);
+    const service = createLeadsService({
+      repository,
+      clock: () => new Date(),
+      generateId: () => crypto.randomUUID(),
+    });
+    const rateLimiter = createRateLimiter({
+      max: RATE_LIMIT_MAX_REQUESTS,
+      windowMs: RATE_LIMIT_WINDOW_MS,
+      clock: () => Date.now(),
+    });
+    return createLeadsRoutes({ service, rateLimiter });
+  };
+
   const postLead = (
-    app: ReturnType<typeof buildApp>,
+    app: Handleable,
     body: unknown,
     ip = "203.0.113.10",
     path = "/leads",
@@ -142,6 +270,14 @@ describe("POST /leads (integração)", () => {
           "x-forwarded-for": ip,
         },
         body: JSON.stringify(body),
+      }),
+    );
+
+  const getLeads = (app: Handleable, ip = "203.0.113.10", path = "/leads") =>
+    app.handle(
+      new Request(`http://localhost${path}`, {
+        method: "GET",
+        headers: { "x-forwarded-for": ip },
       }),
     );
 
@@ -284,6 +420,28 @@ describe("POST /leads (integração)", () => {
     expect(await countLeads()).toBe(RATE_LIMIT_MAX_REQUESTS);
   });
 
+  it("guard do rate limit é exclusivo do POST público: rajada de GET /leads não recebe 429 nem consome o bucket (RF-05)", async () => {
+    const plugin = buildLeadsPlugin();
+    const sharedIp = "198.51.100.60";
+
+    // O guard `onRequest` do rate limit de leads deve valer SÓ para o `POST
+    // /leads` público de captura. Uma rajada de GET /leads acima do limite do
+    // visitante NUNCA pode receber 429: as rotas autenticadas do CRM-04
+    // compartilham o path `/leads` e não podem cair no limite do visitante
+    // (RF-05 / known-issue "rate limit cobre qualquer método"). O GET aqui
+    // responde 404 (a rota autenticada nasce na Task 2.2); o invariante testado
+    // é "nunca 429".
+    for (let attempt = 0; attempt < RATE_LIMIT_MAX_REQUESTS + 1; attempt += 1) {
+      const response = await getLeads(plugin, sharedIp);
+      expect(response.status).not.toBe(429);
+    }
+
+    // Bucket intacto: o POST público válido do MESMO IP ainda passa (201) — a
+    // rajada de GET não consumiu a janela do rate limit.
+    const created = await postLead(plugin, VALID_LEAD_BODY, sharedIp);
+    expect(created.status).toBe(201);
+  });
+
   it("rate limit conta payloads inválidos: flood de 422 do mesmo IP acaba em 429", async () => {
     const app = buildApp();
     const floodIp = "198.51.100.30";
@@ -309,6 +467,12 @@ describe("POST /leads (integração)", () => {
       repository: {
         insert: async () => {
           throw new Error("segredo interno do banco de dados");
+        },
+        list: async () => ({ rows: [], total: 0 }),
+        findById: async () => undefined,
+        updateStatus: async () => undefined,
+        convert: async () => {
+          throw new Error("convert não é exercitado neste teste");
         },
       },
       clock: () => new Date(),

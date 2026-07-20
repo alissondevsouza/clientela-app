@@ -158,7 +158,7 @@ if [ "$DRY_RUN" = true ]; then
 	echo "  7/10 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose up -d"
 	echo "  8/10 ssh remoto: gravar IMAGE_TAG em \${DEPLOY_PATH}/.image-tag"
 	echo "  9/10 ssh remoto: docker image prune -af  (remove tags sha antigas)"
-	echo " 10/10 ssh remoto: curl do DOMAIN (1º endereço)"
+	echo " 10/10 ssh remoto: curl do DOMAIN (1º endereço) e do CRM_DOMAIN"
 	echo "  +    sempre: docker logout ${GHCR_HOST}  (trap de saída, não numerado)"
 	echo ""
 	echo "  DEPLOY_HOST=${DEPLOY_HOST:-<não definido>}"
@@ -225,7 +225,7 @@ log "9/10 Removendo imagens órfãs (prune -af — remove tags sha antigas)"
 # "dangling"), e o disco do KVM 2 cresceria sem teto a cada deploy.
 ssh "$DEPLOY_HOST" "docker image prune -af"
 
-log "10/10 Verificação (curl no domínio)"
+log "10/10 Verificação (curl nos domínios)"
 # DOMAIN pode ser lista de endereços ("raiz, www" — ADR-0009): o curl usa só o primeiro.
 DOMAIN_VALUE="$(ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && grep -E '^DOMAIN=' .env | head -n1 | cut -d= -f2- | cut -d, -f1 | xargs")"
 if [ -n "$DOMAIN_VALUE" ]; then
@@ -233,6 +233,14 @@ if [ -n "$DOMAIN_VALUE" ]; then
 		|| warn "curl de verificação falhou — confira os logs (docker compose logs) na VPS."
 else
 	warn "DOMAIN não encontrado no .env remoto — pulei a verificação por curl."
+fi
+# CRM em host próprio (ADR-0017): a raiz responde 302 → /crm (3xx não é erro p/ curl -f).
+CRM_DOMAIN_VALUE="$(ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && grep -E '^CRM_DOMAIN=' .env | head -n1 | cut -d= -f2- | xargs")"
+if [ -n "$CRM_DOMAIN_VALUE" ]; then
+	ssh "$DEPLOY_HOST" "curl -fsS -o /dev/null -w 'HTTP %{http_code}\n' '${CRM_DOMAIN_VALUE}'" \
+		|| warn "curl de verificação do CRM falhou — confira os logs do caddy/web na VPS."
+else
+	warn "CRM_DOMAIN não encontrado no .env remoto — pulei a verificação do CRM."
 fi
 
 log "Deploy concluído."
