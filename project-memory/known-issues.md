@@ -56,6 +56,11 @@ Formato:
 - **Registrado em**: 2026-07-20 (specs/order-item-client-link, review.md SUGESTÃO)
 - **Plano**: semear as opções com `{id, name}` do próprio item quando presente; resolver junto de qualquer retoque na tela de pedidos.
 
+## Produção tem dados reais e nenhuma cópia fora da VPS
+- **O quê**: o primeiro deploy foi executado (LP-12, via GitHub Actions), então o Postgres de produção passou a acumular dados reais da consultora — clientes, vendas, recebíveis. O backup externo (LP-13) ainda não existe: hoje só há o volume `clientela_pg_data` dentro da própria VPS.
+- **Impacto**: perda total e irreversível de dado de negócio se a VPS morrer, o disco corromper ou alguém executar `docker compose down -v` por engano. Nenhum deploy causa isso (o `deploy.sh` faz só `run --rm migrate` + `up -d` + `image prune`), mas o risco independe do deploy.
+- **Registrado em**: 2026-08-06 (confirmado pelo humano ao revisar o REL-06)
+- **Plano**: LP-13 — backup diário para destino externo (gera ADR sobre o destino). Enquanto não existir, fazer `pg_dump` manual antes de qualquer migração que não seja puramente aditiva.
 ## Infra de E2E ainda não existe
 - **O quê**: fluxos críticos de UI (login, venda, captura de lead) ainda não têm suíte E2E (Playwright); a decisão de cobertura em `plan.md` registra E2E como pendência.
 - **Impacto**: regressões de UI só são pegas por teste manual até a infra existir. **Desde o LP-06 (2026-07-17) o fluxo crítico "captura de lead" existe e está sem E2E**; **desde o CRM-01 (2026-07-17), o fluxo "login" também** — o submit real do form no browser (Server Action → Set-Cookie → redirect) e o clique em "Sair" são cobertos só por unidade dos helpers + verificação de runtime da QA (curl/guards).

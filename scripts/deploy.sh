@@ -3,8 +3,11 @@
 # Deploy de produção para a VPS (INF-05, ADR-0011) — modelo PULL via GHCR.
 # O runner do GitHub Actions executa este script: sincroniza SÓ os arquivos de
 # infra para a VPS e, remotamente:
-#   login no GHCR → pull das imagens (tag EXATA) → migração → up -d →
-#   grava .image-tag → image prune -af → verificação por curl.
+#   login no GHCR → pull das imagens (tag EXATA) → SNAPSHOT do banco → migração →
+#   up -d → grava .image-tag → image prune -af → verificação por curl.
+# O snapshot pré-migração (ADR-0019) é fail-closed: se falhar, o deploy aborta
+# antes de tocar o schema. Ele NÃO é backup — mora na própria VPS; o backup
+# externo é o LP-13.
 # A VPS NÃO recebe código-fonte e NÃO builda — as imagens vêm prontas do GHCR
 # (ghcr.io/${GHCR_OWNER}/clientela-{web,api,migrate}). Idempotente.
 #
@@ -50,6 +53,15 @@ readonly INFRA_FILES=(docker-compose.yml Caddyfile .env.production.example)
 
 # Marcador one-shot da transição: uma vez presente, a limpeza nunca mais roda.
 readonly LAYOUT_MARKER=".layout-v2"
+
+# Snapshot pré-migração (ADR-0019). Fica em ~/backups na VPS — FORA do
+# DEPLOY_PATH, então a transição one-shot (que só age dentro do DEPLOY_PATH)
+# nunca o alcança. Retenção pequena: o KVM 2 tem disco limitado e isto é ponto de
+# restauração de deploy, não arquivo histórico (esse é o LP-13, offsite).
+readonly REMOTE_BACKUP_DIR="\$HOME/backups"
+readonly BACKUP_KEEP=5
+# Tentativas (×2s) esperando o postgres ficar healthy antes do dump.
+readonly PG_WAIT_TRIES=30
 
 # BLACKLIST explícita dos resíduos conhecidos do modelo rsync antigo (código-fonte
 # do repo que a VPS recebia por engano). A limpeza remove SOMENTE estes nomes, e
@@ -145,20 +157,24 @@ REMOTE
 if [ "$DRY_RUN" = true ]; then
 	IMAGE_TAG_DISPLAY="${IMAGE_TAG:-<obrigatória no deploy real>}"
 	log "DRY-RUN — plano de deploy PULL/GHCR (nada será executado):"
-	echo "  1/10 rsync SÓ da infra → \${DEPLOY_HOST}:\${DEPLOY_PATH}  (sem --delete)"
+	echo "  1/11 rsync SÓ da infra → \${DEPLOY_HOST}:\${DEPLOY_PATH}  (sem --delete)"
 	echo "       arquivos: ${INFRA_FILES[*]}"
-	echo "  2/10 ssh remoto: verificar \${DEPLOY_PATH}/.env (falha cedo se ausente)"
-	echo "  3/10 ssh remoto: transição one-shot — só se houver resíduo REAL (apps/ ou"
+	echo "  2/11 ssh remoto: verificar \${DEPLOY_PATH}/.env (falha cedo se ausente)"
+	echo "  3/11 ssh remoto: transição one-shot — só se houver resíduo REAL (apps/ ou"
 	echo "       packages/); remove SOMENTE a blacklist conhecida do modelo rsync,"
 	echo "       preserva .env/.image-tag/backups do operador; grava ${LAYOUT_MARKER} e"
 	echo "       pula se já presente. Blacklist: ${OLD_LAYOUT_RESIDUE[*]}"
-	echo "  4/10 ssh remoto: docker login ${GHCR_HOST} (usuário=GHCR_OWNER do .env; token via stdin)"
-	echo "  5/10 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose --profile tools pull"
-	echo "  6/10 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose run --rm migrate  (sem --build)"
-	echo "  7/10 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose up -d"
-	echo "  8/10 ssh remoto: gravar IMAGE_TAG em \${DEPLOY_PATH}/.image-tag"
-	echo "  9/10 ssh remoto: docker image prune -af  (remove tags sha antigas)"
-	echo " 10/10 ssh remoto: curl do DOMAIN (1º endereço) e do CRM_DOMAIN"
+	echo "  4/11 ssh remoto: docker login ${GHCR_HOST} (usuário=GHCR_OWNER do .env; token via stdin)"
+	echo "  5/11 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose --profile tools pull"
+	echo "  6/11 ssh remoto: snapshot pré-migração — poda mantendo ${BACKUP_KEEP} e grava"
+	echo "       ${REMOTE_BACKUP_DIR}/predeploy-<tag>-<UTC>.sql.gz (pg_dump | gzip)."
+	echo "       FAIL-CLOSED: falha aqui aborta o deploy ANTES de tocar o schema."
+	echo "       Sobe o postgres e espera healthy antes de dumpar (VPS nova: dump vazio, válido)."
+	echo "  7/11 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose run --rm migrate  (sem --build)"
+	echo "  8/11 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose up -d"
+	echo "  9/11 ssh remoto: gravar IMAGE_TAG em \${DEPLOY_PATH}/.image-tag"
+	echo " 10/11 ssh remoto: docker image prune -af  (remove tags sha antigas)"
+	echo " 11/11 ssh remoto: curl do DOMAIN (1º endereço) e do CRM_DOMAIN"
 	echo "  +    sempre: docker logout ${GHCR_HOST}  (trap de saída, não numerado)"
 	echo ""
 	echo "  DEPLOY_HOST=${DEPLOY_HOST:-<não definido>}"
@@ -175,7 +191,7 @@ fi
 [ -n "$IMAGE_TAG" ] || fail "IMAGE_TAG não definido — o deploy real exige a tag EXATA das imagens (ex.: sha-1a2b3c4); o modelo pull nunca usa :latest (ADR-0011). Use env IMAGE_TAG=sha-<curto>."
 assert_safe_deploy_path
 
-log "1/10 Sincronizando SÓ a infra → ${DEPLOY_HOST}:${DEPLOY_PATH} (sem --delete)"
+log "1/11 Sincronizando SÓ a infra → ${DEPLOY_HOST}:${DEPLOY_PATH} (sem --delete)"
 # Apenas os arquivos de infra são enviados — a VPS não recebe código-fonte.
 # Sem --delete: preserva o .env e o .image-tag remote-only.
 INFRA_PATHS=()
@@ -184,11 +200,11 @@ for f in "${INFRA_FILES[@]}"; do
 done
 rsync -az "${INFRA_PATHS[@]}" "${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
-log "2/10 Verificando .env remoto"
+log "2/11 Verificando .env remoto"
 ssh "$DEPLOY_HOST" "test -f '${DEPLOY_PATH}/.env'" \
 	|| fail "${DEPLOY_PATH}/.env não existe na VPS. Crie-o a partir de ${DEPLOY_PATH}/.env.production.example (sincronizado neste deploy) e preencha os valores (inclusive GHCR_OWNER) antes de rodar novamente."
 
-log "3/10 Transição do layout antigo (one-shot, cirúrgica: só resíduo conhecido do modelo rsync)"
+log "3/11 Transição do layout antigo (one-shot, cirúrgica: só resíduo conhecido do modelo rsync)"
 # One-shot via marcador ${LAYOUT_MARKER}; só age com resíduo REAL (apps/ ou packages/);
 # remove SOMENTE a blacklist explícita — backups do operador (backup-*.sql), .env e
 # .image-tag ficam intocados por não estarem na lista.
@@ -203,29 +219,62 @@ GHCR_OWNER_REMOTE="$(ssh "$DEPLOY_HOST" "grep -E '^GHCR_OWNER=' '${DEPLOY_PATH}/
 remote_logout() { ssh "$DEPLOY_HOST" "docker logout '${GHCR_HOST}'" >/dev/null 2>&1 || true; }
 trap remote_logout EXIT
 
-log "4/10 Login no ${GHCR_HOST} (usuário ${GHCR_OWNER_REMOTE}; token via stdin, sem echo)"
+log "4/11 Login no ${GHCR_HOST} (usuário ${GHCR_OWNER_REMOTE}; token via stdin, sem echo)"
 printf '%s' "$GHCR_TOKEN" | ssh "$DEPLOY_HOST" "docker login '${GHCR_HOST}' -u '${GHCR_OWNER_REMOTE}' --password-stdin"
 
-log "5/10 Pull das imagens na tag ${IMAGE_TAG} (--profile tools inclui a migrate)"
+log "5/11 Pull das imagens na tag ${IMAGE_TAG} (--profile tools inclui a migrate)"
 # --profile tools OBRIGATÓRIO: sem a flag o serviço migrate (profile tools) fica
 # FORA do pull e a migração rodaria de imagem stale (mesma classe do defeito do LP-11).
 ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && IMAGE_TAG='${IMAGE_TAG}' docker compose --profile tools pull"
 
-log "6/10 Migração do banco (job efêmero; sem --build — imagem já veio do pull)"
+log "6/11 Snapshot do banco ANTES da migração (fail-closed)"
+# Ponto de restauração no instante de maior risco: o schema mudando. Roda ANTES
+# da migração e ABORTA o deploy se falhar — snapshot opcional é decoração: no dia
+# em que for preciso, não existiria (ADR-0019).
+# POSTGRES_USER/DB são lidos de DENTRO do container (o compose os injeta), então
+# não há parsing do .env remoto nem risco de divergir dele.
+# NÃO substitui backup externo (LP-13): o arquivo fica na mesma VPS.
+ssh "$DEPLOY_HOST" "bash -euo pipefail -c '
+	cd \"${DEPLOY_PATH}\"
+	# Sobe o postgres (idempotente) e ESPERA ficar healthy antes de dumpar. Não
+	# basta checar \"ps -q\": container parado devolve vazio e faríamos skip com
+	# dados existentes — o migrate subiria o banco logo depois e migraria SEM
+	# snapshot, exatamente o caso que este passo existe para cobrir.
+	docker compose up -d postgres >/dev/null
+	for i in \$(seq 1 ${PG_WAIT_TRIES}); do
+		[ \"\$(docker compose ps --format \"{{.Health}}\" postgres 2>/dev/null)\" = \"healthy\" ] && break
+		[ \"\$i\" = \"${PG_WAIT_TRIES}\" ] && { echo \"postgres não ficou healthy em ${PG_WAIT_TRIES} tentativas\" >&2; exit 1; }
+		sleep 2
+	done
+	mkdir -p \"${REMOTE_BACKUP_DIR}\"
+	# Poda ANTES de gravar: disco cheio no meio do dump deixaria arquivo truncado
+	# com cara de backup válido. Mantém ${BACKUP_KEEP} contando o que será criado.
+	# `|| true`: no PRIMEIRO deploy o diretório está vazio e o ls sai não-zero —
+	# com set -e + pipefail isso abortaria o deploy inteiro por não haver o que podar.
+	ls -1t \"${REMOTE_BACKUP_DIR}\"/predeploy-*.sql.gz 2>/dev/null | tail -n +${BACKUP_KEEP} | xargs -r rm -f -- || true
+	dest=\"${REMOTE_BACKUP_DIR}/predeploy-${IMAGE_TAG}-\$(date -u +%Y%m%dT%H%M%SZ).sql.gz\"
+	# pipefail garante que falha do pg_dump derrube o passo mesmo com o gzip ok.
+	docker compose exec -T postgres sh -c \"pg_dump -U \\\"\\\$POSTGRES_USER\\\" -d \\\"\\\$POSTGRES_DB\\\"\" | gzip -c > \"\$dest\"
+	# Arquivo vazio/truncado = dump falhou sem sinalizar: trata como erro.
+	[ -s \"\$dest\" ] || { echo \"dump vazio: \$dest\" >&2; rm -f -- \"\$dest\"; exit 1; }
+	echo \"snapshot: \$dest (\$(du -h \"\$dest\" | cut -f1))\"
+'" || fail "Snapshot pré-migração falhou — deploy abortado ANTES de tocar o schema. Verifique espaço em disco (df -h) e o container postgres na VPS."
+
+log "7/11 Migração do banco (job efêmero; sem --build — imagem já veio do pull)"
 ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && IMAGE_TAG='${IMAGE_TAG}' docker compose run --rm migrate"
 
-log "7/10 Subindo os serviços"
+log "8/11 Subindo os serviços"
 ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && IMAGE_TAG='${IMAGE_TAG}' docker compose up -d"
 
-log "8/10 Persistindo a tag em ${DEPLOY_PATH}/.image-tag (operação manual / pós-reboot)"
+log "9/11 Persistindo a tag em ${DEPLOY_PATH}/.image-tag (operação manual / pós-reboot)"
 printf '%s' "$IMAGE_TAG" | ssh "$DEPLOY_HOST" "cat > '${DEPLOY_PATH}/.image-tag'"
 
-log "9/10 Removendo imagens órfãs (prune -af — remove tags sha antigas)"
+log "10/11 Removendo imagens órfãs (prune -af — remove tags sha antigas)"
 # -a: sem isso o prune não remove as tags sha-<curto> anteriores (não são
 # "dangling"), e o disco do KVM 2 cresceria sem teto a cada deploy.
 ssh "$DEPLOY_HOST" "docker image prune -af"
 
-log "10/10 Verificação (curl nos domínios)"
+log "11/11 Verificação (curl nos domínios)"
 # DOMAIN pode ser lista de endereços ("raiz, www" — ADR-0009): o curl usa só o primeiro.
 DOMAIN_VALUE="$(ssh "$DEPLOY_HOST" "cd '${DEPLOY_PATH}' && grep -E '^DOMAIN=' .env | head -n1 | cut -d= -f2- | cut -d, -f1 | xargs")"
 if [ -n "$DOMAIN_VALUE" ]; then

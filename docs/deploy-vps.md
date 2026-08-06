@@ -450,11 +450,14 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 | Reiniciar um serviço | `docker compose restart web` |
 | Ver leads capturados | no CRM: `https://gestao.consultoralaisbarbosa.com.br/crm/leads` (o `psql` da seção 7 segue como alternativa) |
 | Trocar a senha do CRM | rodar o seed de novo (seção 6, "Criar o login do CRM") — upsert idempotente pelo mesmo e-mail |
-| Backup manual do banco | `mkdir -p ~/backups && docker compose exec -T postgres pg_dump -U clientela clientela > ~/backups/backup-$(date +%F).sql` e **copie para fora da VPS** (`scp`). Grave em `~/backups/` (**fora de `/opt/clientela`**): o deploy nunca entra nesse diretório, mantendo os dumps totalmente isolados do pipeline de infra |
+| Backup manual do banco | `mkdir -p ~/backups && docker compose exec -T postgres pg_dump -U clientela clientela > ~/backups/backup-$(date +%F).sql` e **copie para fora da VPS** (`scp`). Grave em `~/backups/` (**fora de `/opt/clientela`**): a limpeza de transição do deploy só age dentro de `/opt/clientela` e nunca alcança esse diretório |
+| Restaurar um snapshot pré-deploy | `zcat ~/backups/predeploy-<tag>-<UTC>.sql.gz \| docker compose exec -T postgres psql -U clientela -d clientela` (banco **vazio**; para substituir um banco com dados, recrie-o antes: `psql -U clientela -d postgres -c 'DROP DATABASE clientela' -c 'CREATE DATABASE clientela'` com a API parada) |
 
 > Após **reboot** da VPS os containers voltam sozinhos (restart policy `unless-stopped`) — sem `pull` (as imagens já estão locais). Só use o `up` manual acima se precisar recriar um container (ex.: depois de um `down`); ele lê a tag correta de `.image-tag`.
 
-> ⚠️ **Backup**: o backup automático externo é o **LP-13** e ainda não existe. Até lá, backup que fica só na VPS não é backup — rode o `pg_dump` acima e traga o arquivo para sua máquina sempre que houver leads novos importantes.
+> 🛟 **Snapshot automático pré-deploy (ADR-0019):** desde o INF-07, **todo deploy grava um dump em `~/backups/predeploy-<tag>-<UTC>.sql.gz` antes de rodar a migração**, mantendo os 5 mais recentes. É **fail-closed**: se o dump falhar (disco cheio, por exemplo), o deploy aborta **antes** de tocar o schema — nesse caso, libere espaço na VPS (`df -h`, `docker image prune -af`) e rode o deploy de novo. O passo sobe o `postgres` e espera ficar `healthy` antes de dumpar — numa VPS nova o dump sai praticamente vazio, o que é correto (não há dado a preservar).
+>
+> ⚠️ **Isso não é backup**: o snapshot mora na mesma VPS que o banco — disco morre, os dois morrem juntos. Ele protege contra *deploy/migração ruim*, não contra perder a máquina. O backup externo é o **LP-13** e ainda não existe. Até lá, rode o `pg_dump` manual acima e **traga o arquivo para fora da VPS** sempre que houver dado novo importante.
 
 ### Analisar dados com DBeaver (túnel SSH)
 
