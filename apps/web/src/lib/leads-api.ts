@@ -1,8 +1,10 @@
 import {
   apiErrorSchema,
   type Client,
+  type CreateLeadCrmInput,
   type CrmLead,
   clientSchema,
+  createLeadCrmSchema,
   crmLeadSchema,
   type LeadStatus,
   type LeadStatusUpdate,
@@ -17,6 +19,7 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
 const LEADS_PATH = "/leads";
+const LEADS_MANUAL_PATH = "/leads/manual";
 
 const CONTENT_TYPE_HEADER = "content-type";
 const CONTENT_TYPE_JSON = "application/json";
@@ -52,6 +55,7 @@ export type LeadsApiDeps = {
 export type ListLeadsParams = {
   page?: number;
   status?: LeadStatus;
+  search?: string;
 };
 
 // Resultados discriminados (core.md): a página/action faz narrowing sem
@@ -59,6 +63,14 @@ export type ListLeadsParams = {
 // distinguir 404 e 409 do erro genérico.
 export type ListLeadsResult =
   | { ok: true; data: CrmLead[]; page: number; perPage: number; total: number }
+  | { ok: false; message: string };
+
+export type GetLeadResult =
+  | { ok: true; lead: CrmLead }
+  | { ok: false; notFound: boolean; message: string };
+
+export type CreateLeadResult =
+  | { ok: true; lead: CrmLead }
   | { ok: false; message: string };
 
 export type UpdateLeadStatusResult =
@@ -107,6 +119,9 @@ const buildListUrl = (apiUrl: string, params: ListLeadsParams): string => {
   if (params.status !== undefined) {
     query.set("status", params.status);
   }
+  if (params.search !== undefined && params.search.length > 0) {
+    query.set("search", params.search);
+  }
   const queryString = query.toString();
   const base = joinUrl(apiUrl, LEADS_PATH);
   return queryString ? `${base}?${queryString}` : base;
@@ -150,6 +165,82 @@ export const listLeads = async (
     perPage: parsed.data.perPage,
     total: parsed.data.total,
   };
+};
+
+// Busca um lead por id (GET /leads/:id — RF-22 do crm-appointments: resolve
+// o nome do lead pré-selecionado por id, sem depender da busca textual da
+// primeira página). 404 vira `{ notFound: true }` para o chamador descartar a
+// pré-seleção; nunca lança.
+export const getLead = async (
+  id: string,
+  { fetchImpl, apiUrl, token }: LeadsApiDeps,
+): Promise<GetLeadResult> => {
+  let response: Response;
+  try {
+    response = await fetchImpl(joinUrl(apiUrl, leadPath(id, "")), {
+      method: "GET",
+      headers: authHeaders(token),
+    });
+  } catch {
+    return { ok: false, notFound: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === HTTP_NOT_FOUND) {
+    return { ok: false, notFound: true, message: NOT_FOUND_MESSAGE };
+  }
+
+  if (response.status !== HTTP_OK) {
+    return {
+      ok: false,
+      notFound: false,
+      message: await extractErrorMessage(response),
+    };
+  }
+
+  const parsed = crmLeadSchema.safeParse(await readJson(response));
+  if (!parsed.success) {
+    return { ok: false, notFound: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  return { ok: true, lead: parsed.data };
+};
+
+// Cria lead pelo CRM (POST /leads/manual — RF-23/RF-24 de `crm-appointments`,
+// ADR-0020): rota autenticada DISTINTA da captura pública (`POST /leads`,
+// `submit-lead.ts`), usada pelo cadastro rápido do seletor de pessoa da
+// agenda. Valida na fronteira com o schema compartilhado antes de enviar
+// (defesa em profundidade — a Server Action chamadora já validou); nunca
+// lança.
+export const createLead = async (
+  values: CreateLeadCrmInput,
+  { fetchImpl, apiUrl, token }: LeadsApiDeps,
+): Promise<CreateLeadResult> => {
+  const parsedInput = createLeadCrmSchema.safeParse(values);
+  if (!parsedInput.success) {
+    return { ok: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  let response: Response;
+  try {
+    response = await fetchImpl(joinUrl(apiUrl, LEADS_MANUAL_PATH), {
+      method: "POST",
+      headers: jsonAuthHeaders(token),
+      body: JSON.stringify(parsedInput.data),
+    });
+  } catch {
+    return { ok: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status !== HTTP_CREATED) {
+    return { ok: false, message: await extractErrorMessage(response) };
+  }
+
+  const parsed = crmLeadSchema.safeParse(await readJson(response));
+  if (!parsed.success) {
+    return { ok: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  return { ok: true, lead: parsed.data };
 };
 
 // Atualiza o status do lead (PATCH /leads/:id/status). Valida o status na

@@ -61,6 +61,19 @@ Formato:
 - **Impacto**: perda total e irreversível de dado de negócio se a VPS morrer, o disco corromper ou alguém executar `docker compose down -v` por engano. Nenhum deploy causa isso (o `deploy.sh` faz só `run --rm migrate` + `up -d` + `image prune`), mas o risco independe do deploy.
 - **Registrado em**: 2026-08-06 (confirmado pelo humano ao revisar o REL-06)
 - **Plano**: LP-13 — backup diário para destino externo (gera ADR sobre o destino). Enquanto não existir, fazer `pg_dump` manual antes de qualquer migração que não seja puramente aditiva.
+
+## Fuso: agenda recorta o dia em America/Sao_Paulo, dashboard ainda agrega o mês em UTC
+- **O quê**: o ADR-0018 fixou `APP_TIME_ZONE = America/Sao_Paulo` para os recortes da agenda (calculados em TS e passados ao SQL como bounds UTC), mas o dashboard (ADR-0014) continua usando `date_trunc('month', now())` e `CURRENT_DATE`, que dependem do `TimeZone` da sessão Postgres.
+- **Impacto**: duas semânticas de "hoje"/"este mês" convivendo. Na prática, a virada de mês do dashboard acontece ~21h BRT do dia anterior, enquanto a agenda vira à meia-noite local. Nenhum número fica errado dentro da própria feature; a confusão é conceitual e aparece na borda.
+- **Registrado em**: 2026-08-05 (specs/crm-appointments, ADR-0018)
+- **Plano**: migrar `dashboard` e o `overdue` de `receivables` para o mesmo helper de fuso (`appLocalDayRangeUtc`) num item próprio — muda números de uma feature já entregue, então precisa de decisão do humano. Enquanto não migrar, garantir `TimeZone=UTC` no Postgres de produção (plano já registrado na issue do dashboard).
+
+## Agenda (REL-06) sem cobertura E2E; formulário e ações validados só por runtime manual
+- **O quê**: o formulário de compromisso (composição data+hora→UTC, aviso de conflito, seletor cliente×lead) e as ações de transição/vínculo de venda não têm teste automatizado de UI — o Vitest da raiz só coleta `*.test.ts` em ambiente `node`.
+- **Impacto**: a lógica pura foi extraída para `lib/`/`packages/shared` e **é** testada (composição de payload, fuso, URLs de WhatsApp/Google Agenda); o que fica descoberto é a fiação React: binding de Server Action, estados do seletor e renderização condicional das ações por status. Regressão aí só aparece em uso real.
+- **Registrado em**: 2026-08-05 (specs/crm-appointments, QA rodada 1 — validado manualmente em runtime com build de produção)
+- **Plano**: entra no REL-01 (infra Playwright), junto de login, venda e captura de lead.
+
 ## Infra de E2E ainda não existe
 - **O quê**: fluxos críticos de UI (login, venda, captura de lead) ainda não têm suíte E2E (Playwright); a decisão de cobertura em `plan.md` registra E2E como pendência.
 - **Impacto**: regressões de UI só são pegas por teste manual até a infra existir. **Desde o LP-06 (2026-07-17) o fluxo crítico "captura de lead" existe e está sem E2E**; **desde o CRM-01 (2026-07-17), o fluxo "login" também** — o submit real do form no browser (Server Action → Set-Cookie → redirect) e o clique em "Sair" são cobertos só por unidade dos helpers + verificação de runtime da QA (curl/guards).

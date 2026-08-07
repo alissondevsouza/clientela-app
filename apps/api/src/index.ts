@@ -1,6 +1,8 @@
 import { createApp } from "./app";
 import { createDb } from "./db/client";
 import { loadEnv } from "./env";
+import { createAppointmentsRepository } from "./modules/appointments/appointments.repository";
+import { createAppointmentsService } from "./modules/appointments/appointments.service";
 import { createAuthRepository } from "./modules/auth/auth.repository";
 import {
   LOGIN_RATE_LIMIT_MAX,
@@ -81,6 +83,12 @@ const dashboardService = createDashboardService({
   clock: () => new Date(),
 });
 
+const appointmentsRepository = createAppointmentsRepository(db);
+const appointmentsService = createAppointmentsService({
+  repository: appointmentsRepository,
+  clock: () => new Date(),
+});
+
 createApp({
   leadsService,
   rateLimiter,
@@ -91,6 +99,7 @@ createApp({
   salesService,
   ordersService,
   dashboardService,
+  appointmentsService,
 }).listen(env.PORT, ({ hostname, port: boundPort }) => {
   console.log(`API rodando em http://${hostname}:${boundPort}`);
 });

@@ -14,6 +14,10 @@ import {
   RATE_LIMIT_WINDOW_MS,
 } from "../../plugins/rate-limit";
 import {
+  type AppointmentsRepositoryPort,
+  createAppointmentsService,
+} from "../appointments/appointments.service";
+import {
   type AuthRepositoryPort,
   createAuthService,
   type PasswordHasher,
@@ -171,6 +175,38 @@ const noopDashboardRepository: DashboardRepositoryPort = {
   },
 };
 
+// Appointments em memória: este arquivo só exercita `/leads` e `/health` —
+// nenhuma rota autenticada de appointments é chamada. O fake só satisfaz o
+// `createApp`.
+const noopAppointmentsRepository: AppointmentsRepositoryPort = {
+  findClientById: async () => undefined,
+  findLeadById: async () => undefined,
+  create: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  list: async () => ({ rows: [], total: 0 }),
+  getById: async () => undefined,
+  update: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  markDone: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  markNoShow: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  cancel: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  linkSale: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  remove: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  findConflicts: async () => [],
+};
+
 const buildNoopAuthDeps = () => ({
   authService: createAuthService({
     repository: noopAuthRepository,
@@ -197,6 +233,10 @@ const buildNoopAuthDeps = () => ({
   }),
   dashboardService: createDashboardService({
     repository: noopDashboardRepository,
+    clock: () => new Date(),
+  }),
+  appointmentsService: createAppointmentsService({
+    repository: noopAppointmentsRepository,
     clock: () => new Date(),
   }),
 });

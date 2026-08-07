@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import {
+  type AppointmentsRepositoryPort,
+  createAppointmentsService,
+} from "./modules/appointments/appointments.service";
+import {
   type AuthRepositoryPort,
   createAuthService,
   type PasswordHasher,
@@ -148,6 +152,38 @@ const noopDashboardRepository: DashboardRepositoryPort = {
   },
 };
 
+// Appointments em memória: o único caso deste arquivo é o `/health` (rota
+// pública), que não toca appointments — o fake só satisfaz o contrato do
+// `createApp`.
+const noopAppointmentsRepository: AppointmentsRepositoryPort = {
+  findClientById: async () => undefined,
+  findLeadById: async () => undefined,
+  create: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  list: async () => ({ rows: [], total: 0 }),
+  getById: async () => undefined,
+  update: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  markDone: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  markNoShow: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  cancel: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  linkSale: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  remove: async () => {
+    throw new Error("appointments não é exercitado neste teste");
+  },
+  findConflicts: async () => [],
+};
+
 const buildApp = () =>
   createApp({
     leadsService: createLeadsService({
@@ -185,6 +221,10 @@ const buildApp = () =>
     }),
     dashboardService: createDashboardService({
       repository: noopDashboardRepository,
+      clock: () => new Date(),
+    }),
+    appointmentsService: createAppointmentsService({
+      repository: noopAppointmentsRepository,
       clock: () => new Date(),
     }),
   });

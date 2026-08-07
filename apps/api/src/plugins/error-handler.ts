@@ -1,6 +1,12 @@
 import type { ApiError } from "@clientela/shared";
 import { Elysia } from "elysia";
 import {
+  AppointmentNotFoundError,
+  AppointmentStateError,
+  InvalidAppointmentPersonError,
+  InvalidAppointmentSaleError,
+} from "../modules/appointments/appointments.errors";
+import {
   InvalidCredentialsError,
   UnauthorizedError,
 } from "../modules/auth/auth.errors";
@@ -53,6 +59,10 @@ const ERROR_CODE = {
   orderState: "ORDER_STATE",
   invalidOrderItem: "INVALID_ORDER_ITEM",
   invalidOrderClient: "INVALID_ORDER_CLIENT",
+  appointmentNotFound: "APPOINTMENT_NOT_FOUND",
+  appointmentState: "APPOINTMENT_STATE",
+  invalidAppointmentPerson: "INVALID_APPOINTMENT_PERSON",
+  invalidAppointmentSale: "INVALID_APPOINTMENT_SALE",
   notFound: "NOT_FOUND",
   internal: "INTERNAL_ERROR",
 } as const;
@@ -214,6 +224,34 @@ export const errorHandler = new Elysia({ name: "error-handler" }).onError(
     if (error instanceof InvalidOrderClientError) {
       set.status = HTTP_UNPROCESSABLE_ENTITY;
       return buildError(ERROR_CODE.invalidOrderClient, error.message);
+    }
+
+    // Erros de domínio do módulo appointments (core.md/api.md): lançados no
+    // service (validação de pessoa, RF-03) ou na guarda transacional do
+    // repository (transições, edição em status terminal, vínculo de venda).
+    // NotFound cobre inexistente, cross-tenant e id malformado (404);
+    // conflitos de estado (transição fora de `scheduled`, edição além de
+    // `notes` em status terminal, vínculo fora de `scheduled`/`done`) são
+    // 409; pessoa/venda inválida são 422. Mensagens pt-BR já genéricas na
+    // origem (não vazam existência).
+    if (error instanceof AppointmentNotFoundError) {
+      set.status = HTTP_NOT_FOUND;
+      return buildError(ERROR_CODE.appointmentNotFound, error.message);
+    }
+
+    if (error instanceof AppointmentStateError) {
+      set.status = HTTP_CONFLICT;
+      return buildError(ERROR_CODE.appointmentState, error.message);
+    }
+
+    if (error instanceof InvalidAppointmentPersonError) {
+      set.status = HTTP_UNPROCESSABLE_ENTITY;
+      return buildError(ERROR_CODE.invalidAppointmentPerson, error.message);
+    }
+
+    if (error instanceof InvalidAppointmentSaleError) {
+      set.status = HTTP_UNPROCESSABLE_ENTITY;
+      return buildError(ERROR_CODE.invalidAppointmentSale, error.message);
     }
 
     set.status = HTTP_INTERNAL_ERROR;

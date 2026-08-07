@@ -1,7 +1,17 @@
 import type { Client, CrmLead, LeadStatusUpdate } from "@clientela/shared";
-import { and, count, desc, eq, ne } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  isNull,
+  ne,
+  or,
+  type SQL,
+} from "drizzle-orm";
 import type { Database } from "../../db/client";
-import { clients, leads, type NewLead } from "../../db/schema";
+import { appointments, clients, leads, type NewLead } from "../../db/schema";
 import { LeadAlreadyConvertedError } from "./leads.errors";
 import type {
   ConvertLeadClientData,
@@ -15,6 +25,25 @@ type LeadRow = typeof leads.$inferSelect;
 type ClientRow = typeof clients.$inferSelect;
 
 const CONVERTED_STATUS = "converted";
+
+// Condição de busca (RF-14): `ILIKE %termo%` em name OU whatsapp
+// (case-insensitive), mesmo padrão de `clients.repository.ts`. Termo só com
+// dígitos também casa a forma só-dígitos contra o whatsapp normalizado (sem
+// máscara) — ex.: "(11) 9" casa com o número guardado.
+const buildSearchCondition = (search: string): SQL | undefined => {
+  const term = `%${search}%`;
+  const conditions: SQL[] = [
+    ilike(leads.name, term),
+    ilike(leads.whatsapp, term),
+  ];
+
+  const digits = search.replace(/\D/g, "");
+  if (digits.length > 0) {
+    conditions.push(ilike(leads.whatsapp, `%${digits}%`));
+  }
+
+  return or(...conditions);
+};
 
 // Molda a linha de lead no contrato de resposta do CRM (CrmLead): timestamp
 // `Date` → ISO 8601; `consentAt`/`updatedAt` ficam de fora (não fazem parte do
@@ -64,8 +93,14 @@ export const createLeadsRepository = (db: Database): LeadsRepositoryPort => {
     page,
     perPage,
     status,
+    search,
   }: ListLeadsParams): Promise<{ rows: CrmLead[]; total: number }> => {
-    const where = status ? eq(leads.status, status) : undefined;
+    const statusCondition = status ? eq(leads.status, status) : undefined;
+    const searchCondition = search ? buildSearchCondition(search) : undefined;
+    const conditions = [statusCondition, searchCondition].filter(
+      (condition): condition is SQL => condition !== undefined,
+    );
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
     const offset = (page - 1) * perPage;
 
     const rows = await db
@@ -151,6 +186,25 @@ export const createLeadsRepository = (db: Database): LeadsRepositoryPort => {
         .update(leads)
         .set({ clientId: clientRow.id })
         .where(eq(leads.id, leadId));
+
+      // (d) RF-12: propaga a conversão para a agenda, na MESMA transação.
+      // Só os compromissos do lead que AINDA não têm cliente são afetados
+      // (`client_id IS NULL`) — um compromisso que já apontava para uma
+      // cliente (ex.: vínculo manual anterior) nunca é sobrescrito.
+      // `lead_id` é preservado (rastreabilidade) — o UPDATE só toca
+      // `client_id`. Escopado por `consultant_id` para não vazar entre
+      // consultoras. Não revalida `sale_id` pré-existente (limitação
+      // declarada do RF-12): o vínculo de venda é preservado como está.
+      await tx
+        .update(appointments)
+        .set({ clientId: clientRow.id })
+        .where(
+          and(
+            eq(appointments.leadId, leadId),
+            isNull(appointments.clientId),
+            eq(appointments.consultantId, insertClient.consultantId),
+          ),
+        );
 
       return toClient(clientRow);
     });
