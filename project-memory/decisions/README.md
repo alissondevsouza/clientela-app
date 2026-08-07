@@ -27,6 +27,7 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0015](./0015-orders-lifecycle-concurrency.md) | Pedidos: transições por endpoints explícitos; exclusividade só onde há efeito colateral | Aceito |
 | [0016](./0016-personal-data-snapshot-boundary.md) | Snapshot de dado pessoal só com fundamento; sem fundamento, join + apagamento propagado | Aceito |
 | [0017](./0017-crm-subdomain-gestao.md) | CRM em subdomínio gestao.* (split por host no Caddy; substitui parcialmente o 0009) | Aceito |
+| [0019](./0019-pre-deploy-db-snapshot.md) | Snapshot do banco antes da migração, fail-closed, no pipeline de deploy | Aceito |
 
 ## Template
 

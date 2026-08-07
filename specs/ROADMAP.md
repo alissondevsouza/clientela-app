@@ -67,6 +67,8 @@
 - [x] **LP-11** → `specs/production-deploy` — Deploy: Dockerfiles (web standalone, api), `docker-compose.yml` de produção com Caddy (HTTPS automático) + Postgres com volume; script de deploy via SSH — _dep: LP-01..LP-07_
 - [>] **LP-12** `(humano)` — Provisionar VPS (Hostinger), apontar DNS, rodar primeiro deploy com o agente assistindo — VPS KVM 2 e domínio comprados (2026-07-17); guia passo a passo entregue em `docs/deploy-vps.md`; falta executar o primeiro deploy
 - [ ] **LP-13** — Backup diário do Postgres para fora da VPS (destino a decidir — gera ADR) — _dep: LP-12_
+- [x] **LP-12** `(humano)` — Provisionar VPS (Hostinger), apontar DNS, rodar primeiro deploy — VPS KVM 2 e domínio comprados (2026-07-17); guia em `docs/deploy-vps.md`. **Primeiro deploy executado via GitHub Actions** (pipeline do ADR-0011, modelo pull por GHCR), confirmado pelo humano em 2026-08-06 — data derivada do commit que disparou o pipeline (`59929fe`, 2026-07-20). **A partir daqui existe banco de produção com dados reais**: toda migração futura precisa ser avaliada quanto a destrutividade (ver `database.md` e a skill `drizzle-safe-migrations`)
+- [ ] **LP-13** — Backup diário do Postgres para fora da VPS (destino a decidir — gera ADR) — _dep: LP-12_ — **desbloqueado e agora é o item de maior risco em aberto**: desde o LP-12 há dados reais em produção sem nenhuma cópia fora da VPS. "Backup que fica só dentro da VPS não é backup" (`02-architecture.md`)
 
 ## Fase 2 — CRM MVP
 
@@ -102,6 +104,7 @@
 
 - [x] **INF-01** → `specs/github-actions-ci-deploy` — CI (lint + typecheck + testes) quando houver remote — _gatilho disparado: humano vai publicar o repo no GitHub (2026-07-17)_
 - [x] **INF-04** → `specs/github-actions-ci-deploy` — Deploy contínuo via GitHub Actions (push na `main` → CI → deploy SSH na VPS), substituindo o deploy manual da máquina local (decisão do humano; gera ADR) — _dep: INF-01, LP-11_
+- [R] **INF-07** — Snapshot do banco antes da migração no pipeline de deploy (fail-closed, retenção 5, `~/backups/predeploy-<tag>-<UTC>.sql.gz` na VPS) — ADR-0019; edição direta (infra/docs), size P — pedido do humano em 2026-08-06, após o LP-12 confirmar que há dados reais em produção. **Não substitui o LP-13** (cópia externa)
 - [ ] **INF-02** — `linker: "isolated"` no Bun — _gatilho: segundo bug de phantom dependency_
 - [ ] **INF-03** — Turborepo — _gatilho: pipeline > 2–3 min ou > 5 packages_
 - [R] **INF-06** — Split de domínios para produção: landing na raiz + CRM em `gestao.*` (Caddy por host, env `CRM_DOMAIN`, seed da consultora em produção, guia de deploy atualizado — ADR-0017) — pedido do humano em 2026-07-20; edição direta (docs/infra)
