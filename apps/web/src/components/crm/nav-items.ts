@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  CalendarDays,
   ClipboardList,
   Home,
   Package,
@@ -20,6 +21,7 @@ export const CRM_NAV_ITEMS: readonly CrmNavItem[] = [
   { href: CRM_ROOT_HREF, label: "Início", icon: Home },
   { href: "/crm/clients", label: "Clientes", icon: Users },
   { href: "/crm/leads", label: "Leads", icon: UserPlus },
+  { href: "/crm/appointments", label: "Agenda", icon: CalendarDays },
   { href: "/crm/products", label: "Produtos", icon: Package },
   { href: "/crm/sales", label: "Vendas", icon: ShoppingBag },
   { href: "/crm/orders", label: "Pedidos", icon: ClipboardList },

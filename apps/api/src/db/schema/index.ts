@@ -1,3 +1,8 @@
+export {
+  type Appointment,
+  appointments,
+  type NewAppointment,
+} from "./appointments";
 export { type Client, clients, type NewClient } from "./clients";
 export {
   type Consultant,

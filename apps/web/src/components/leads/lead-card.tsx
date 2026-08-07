@@ -1,5 +1,5 @@
 import type { CrmLead } from "@clientela/shared";
-import { MessageCircle } from "lucide-react";
+import { CalendarPlus, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { LeadStatusBadge } from "@/components/leads/lead-status-badge";
@@ -15,12 +15,22 @@ const VIEW_CLIENT_LABEL = "Ver cliente";
 const DELETED_CLIENT_TEXT = "Cliente excluída";
 
 const CONVERTED_STATUS = "converted";
+// Lead descartado não se agenda (RF-22) — a única exceção à ação "Agendar",
+// que existe para todos os demais status (inclusive convertido, cujo
+// compromisso passa a apontar para a cliente via conversão, RF-12).
+const DISCARDED_STATUS = "discarded";
 const ISO_DATE_TIME_SEPARATOR = "T";
 
 const clientDetailHref = (id: string): string => `/crm/clients/${id}`;
 
+const newAppointmentHref = (leadId: string): string =>
+  `/crm/appointments/new?leadId=${encodeURIComponent(leadId)}`;
+
 const whatsappAriaLabel = (name: string): string =>
   `Conversar com ${name} no WhatsApp`;
+
+const scheduleAriaLabel = (name: string): string =>
+  `Agendar compromisso com ${name}`;
 
 // `createdAt` chega como ISO datetime (ex.: `2026-07-18T12:00:00.000Z`); a UI
 // mostra só a data (dd/mm/aaaa). `formatDateBr` espera `yyyy-mm-dd`, então
@@ -43,6 +53,7 @@ type LeadCardProps = {
 export function LeadCard({ lead, children }: LeadCardProps) {
   const waHref = buildWhatsAppUrl({ phone: toWaPhone(lead.whatsapp) });
   const isConverted = lead.status === CONVERTED_STATUS;
+  const canSchedule = lead.status !== DISCARDED_STATUS;
 
   return (
     <Card size="sm">
@@ -54,18 +65,32 @@ export function LeadCard({ lead, children }: LeadCardProps) {
           </p>
           <LeadStatusBadge status={lead.status} />
         </div>
-        <a
-          href={waHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={whatsappAriaLabel(lead.name)}
-          className={cn(
-            buttonVariants({ variant: "outline", size: "icon" }),
-            "size-11 shrink-0 md:size-9",
-          )}
-        >
-          <MessageCircle aria-hidden />
-        </a>
+        <div className="flex shrink-0 gap-2">
+          {canSchedule ? (
+            <Link
+              href={newAppointmentHref(lead.id)}
+              aria-label={scheduleAriaLabel(lead.name)}
+              className={cn(
+                buttonVariants({ variant: "outline", size: "icon" }),
+                "size-11 md:size-9",
+              )}
+            >
+              <CalendarPlus aria-hidden />
+            </Link>
+          ) : null}
+          <a
+            href={waHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={whatsappAriaLabel(lead.name)}
+            className={cn(
+              buttonVariants({ variant: "outline", size: "icon" }),
+              "size-11 md:size-9",
+            )}
+          >
+            <MessageCircle aria-hidden />
+          </a>
+        </div>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-2">

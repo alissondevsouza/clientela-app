@@ -3,10 +3,12 @@ import { paginationQuerySchema } from "./pagination";
 import { whatsappSchema } from "./whatsapp-validation";
 
 const INTEREST_MAX_LENGTH = 500;
+const SEARCH_MAX_LENGTH = 100;
 
 const STATUS_INVALID_MESSAGE = "Status de lead inválido";
 const STATUS_UPDATE_INVALID_MESSAGE =
   "Status inválido: use novo, contatado ou descartado";
+const SEARCH_MAX_MESSAGE = "A busca deve ter no máximo 100 caracteres";
 
 // Fonte única dos status do funil de lead (core.md: literal único). O schema
 // Drizzle importa daqui (o web precisa do enum para filtro/labels e não pode
@@ -60,6 +62,21 @@ export const createLeadSchema = z.object({
 export type CreateLeadInput = z.input<typeof createLeadSchema>;
 export type CreateLead = z.output<typeof createLeadSchema>;
 
+// Contrato de criação de lead pelo CRM (RF-24 de `crm-appointments`, ADR-0020):
+// reusa os campos e mensagens pt-BR de `createLeadSchema` (nome + WhatsApp),
+// mas sem `interest` (fora do cadastro rápido) e sem `consent` — o fundamento
+// do consentimento aqui é declarado pela consultora na captura do dado, não um
+// checkbox da própria pessoa (ADR-0020). Sem o honeypot `website` de
+// `leadCaptureRequestSchema`: essa defesa é para tráfego anônimo, sem sentido
+// atrás de autenticação.
+export const createLeadCrmSchema = createLeadSchema.omit({
+  interest: true,
+  consent: true,
+});
+
+export type CreateLeadCrmInput = z.input<typeof createLeadCrmSchema>;
+export type CreateLeadCrm = z.output<typeof createLeadCrmSchema>;
+
 // Contrato HTTP público da captura de lead: reusa `createLeadSchema` (fonte de
 // verdade do formulário) e acrescenta o honeypot `website`. Campo opcional e
 // livre: a detecção de bot (não-vazio) é regra de negócio do service, não do
@@ -91,10 +108,18 @@ export const crmLeadSchema = z.object({
 export type CrmLead = z.infer<typeof crmLeadSchema>;
 
 // Query da listagem autenticada: paginação padrão + filtro `?status=` opcional
-// pelo enum (valor inválido rejeitado em pt-BR).
+// pelo enum (valor inválido rejeitado em pt-BR) + `search` livre por nome ou
+// WhatsApp (RF-14 de `crm-appointments`), espelhando `clientsListQuerySchema`
+// (mesmo tamanho máximo e mesma semântica de trim/vazio) — alimenta o seletor
+// de lead do formulário de compromisso sem paginar às cegas.
 export const leadsListQuerySchema = paginationQuerySchema.extend({
   status: z
     .enum(leadStatusValues, { error: STATUS_INVALID_MESSAGE })
+    .optional(),
+  search: z
+    .string()
+    .trim()
+    .max(SEARCH_MAX_LENGTH, SEARCH_MAX_MESSAGE)
     .optional(),
 });
 

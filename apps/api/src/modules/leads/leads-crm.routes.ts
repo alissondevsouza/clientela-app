@@ -1,4 +1,5 @@
 import {
+  createLeadCrmSchema,
   leadsListQuerySchema,
   updateLeadStatusSchema,
 } from "@clientela/shared";
@@ -39,32 +40,55 @@ export const createLeadsCrmRoutes = ({
     return id;
   };
 
-  return new Elysia()
-    .get(
-      "/leads",
-      async ({ request, query }) => {
+  return (
+    new Elysia()
+      .get(
+        "/leads",
+        async ({ request, query }) => {
+          await resolveConsultantId(request.headers.get(AUTHORIZATION_HEADER));
+          return service.listForCrm(query);
+        },
+        { query: leadsListQuerySchema },
+      )
+      // `/leads/manual` registrada ANTES de `/leads/:id` (convenção de
+      // sales.routes.ts: literal antes de paramétrica). RF-24/ADR-0020: rota
+      // DISTINTA de `POST /leads` (pública, `leads.routes.ts`) — o Elysia resolve
+      // (método, path) duplicados com o último `.use()` composto vencendo para
+      // TODA requisição (comprovado empiricamente), então reusar o mesmo path
+      // aqui apagaria silenciosamente a captura pública. Autenticada por padrão
+      // (guard default-deny) — NÃO entra em `DEFAULT_PUBLIC_ROUTES`.
+      .post(
+        "/leads/manual",
+        async ({ request, body, set }) => {
+          await resolveConsultantId(request.headers.get(AUTHORIZATION_HEADER));
+          const lead = await service.createManual(body);
+          set.status = HTTP_CREATED;
+          return lead;
+        },
+        { body: createLeadCrmSchema },
+      )
+      .get("/leads/:id", async ({ request, params }) => {
         await resolveConsultantId(request.headers.get(AUTHORIZATION_HEADER));
-        return service.listForCrm(query);
-      },
-      { query: leadsListQuerySchema },
-    )
-    .patch(
-      "/leads/:id/status",
-      async ({ request, params, body }) => {
-        await resolveConsultantId(request.headers.get(AUTHORIZATION_HEADER));
-        return service.updateStatus(requireValidId(params.id), body.status);
-      },
-      { body: updateLeadStatusSchema },
-    )
-    .post("/leads/:id/convert", async ({ request, params, set }) => {
-      const consultantId = await resolveConsultantId(
-        request.headers.get(AUTHORIZATION_HEADER),
-      );
-      const client = await service.convertToClient(
-        requireValidId(params.id),
-        consultantId,
-      );
-      set.status = HTTP_CREATED;
-      return client;
-    });
+        return service.getById(requireValidId(params.id));
+      })
+      .patch(
+        "/leads/:id/status",
+        async ({ request, params, body }) => {
+          await resolveConsultantId(request.headers.get(AUTHORIZATION_HEADER));
+          return service.updateStatus(requireValidId(params.id), body.status);
+        },
+        { body: updateLeadStatusSchema },
+      )
+      .post("/leads/:id/convert", async ({ request, params, set }) => {
+        const consultantId = await resolveConsultantId(
+          request.headers.get(AUTHORIZATION_HEADER),
+        );
+        const client = await service.convertToClient(
+          requireValidId(params.id),
+          consultantId,
+        );
+        set.status = HTTP_CREATED;
+        return client;
+      })
+  );
 };

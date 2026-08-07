@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createLeadCrmSchema,
   createLeadSchema,
   crmLeadSchema,
   leadCaptureRequestSchema,
@@ -91,6 +92,53 @@ describe("createLeadSchema", () => {
       consent: true,
     });
     expect(result.interest).toBeUndefined();
+  });
+});
+
+describe("createLeadCrmSchema (RF-24, crm-appointments)", () => {
+  it("aceita nome e whatsapp válidos, normalizando o whatsapp para dígitos", () => {
+    const result = createLeadCrmSchema.parse({
+      name: "Maria Silva",
+      whatsapp: "(11) 98765-4321",
+    });
+    expect(result).toEqual({ name: "Maria Silva", whatsapp: "11987654321" });
+  });
+
+  it("não exige nem aceita campo de consentimento", () => {
+    expect("consent" in createLeadCrmSchema.shape).toBe(false);
+  });
+
+  it("não exige nem aceita o honeypot da captura pública", () => {
+    expect("website" in createLeadCrmSchema.shape).toBe(false);
+  });
+
+  it("não exige nem aceita interesse", () => {
+    expect("interest" in createLeadCrmSchema.shape).toBe(false);
+  });
+
+  it("rejeita whatsapp inválido com a mesma mensagem pt-BR de createLeadSchema", () => {
+    const result = createLeadCrmSchema.safeParse({
+      name: "Maria Silva",
+      whatsapp: "8765-4321",
+    });
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    expect(result.error.issues[0]?.message).toBe(
+      "Informe um WhatsApp válido com DDD",
+    );
+  });
+
+  it("rejeita nome ausente com a mesma mensagem pt-BR de createLeadSchema", () => {
+    const result = createLeadCrmSchema.safeParse({
+      whatsapp: "11987654321",
+    });
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    expect(result.error.issues[0]?.message).toBe("Informe seu nome completo");
   });
 });
 
@@ -191,6 +239,44 @@ describe("leadsListQuerySchema", () => {
     const message = result.error.issues[0]?.message ?? "";
     expect(message).toBe("Status de lead inválido");
     expect(message).not.toMatch(/invalid|expected|received|enum/i);
+  });
+
+  it("aceita search presente e combina com status/paginação (RF-14)", () => {
+    const result = leadsListQuerySchema.parse({
+      search: "Maria",
+      status: "new",
+      page: 2,
+      perPage: 10,
+    });
+    expect(result).toEqual({
+      search: "Maria",
+      status: "new",
+      page: 2,
+      perPage: 10,
+    });
+  });
+
+  it("search ausente continua válido (chamadas existentes sem o parâmetro)", () => {
+    const result = leadsListQuerySchema.parse({});
+    expect(result).toEqual({ page: 1, perPage: 20 });
+    expect("search" in result).toBe(false);
+  });
+
+  it("aceita search vazio (a interpretação de vazio é do service, não do schema)", () => {
+    const result = leadsListQuerySchema.parse({ search: "" });
+    expect(result.search).toBe("");
+  });
+
+  it("rejeita search acima de 100 caracteres com mensagem pt-BR", () => {
+    const result = leadsListQuerySchema.safeParse({
+      search: "a".repeat(101),
+    });
+    expect(result.success).toBe(false);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    const message = result.error.issues[0]?.message ?? "";
+    expect(message).toBe("A busca deve ter no máximo 100 caracteres");
   });
 });
 

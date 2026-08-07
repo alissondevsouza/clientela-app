@@ -65,25 +65,25 @@
 ### No ar
 
 - [x] **LP-11** → `specs/production-deploy` — Deploy: Dockerfiles (web standalone, api), `docker-compose.yml` de produção com Caddy (HTTPS automático) + Postgres com volume; script de deploy via SSH — _dep: LP-01..LP-07_
-- [>] **LP-12** `(humano)` — Provisionar VPS (Hostinger), apontar DNS, rodar primeiro deploy com o agente assistindo — VPS KVM 2 e domínio comprados (2026-07-17); guia passo a passo entregue em `docs/deploy-vps.md`; falta executar o primeiro deploy
-- [ ] **LP-13** — Backup diário do Postgres para fora da VPS (destino a decidir — gera ADR) — _dep: LP-12_
 - [x] **LP-12** `(humano)` — Provisionar VPS (Hostinger), apontar DNS, rodar primeiro deploy — VPS KVM 2 e domínio comprados (2026-07-17); guia em `docs/deploy-vps.md`. **Primeiro deploy executado via GitHub Actions** (pipeline do ADR-0011, modelo pull por GHCR), confirmado pelo humano em 2026-08-06 — data derivada do commit que disparou o pipeline (`59929fe`, 2026-07-20). **A partir daqui existe banco de produção com dados reais**: toda migração futura precisa ser avaliada quanto a destrutividade (ver `database.md` e a skill `drizzle-safe-migrations`)
 - [ ] **LP-13** — Backup diário do Postgres para fora da VPS (destino a decidir — gera ADR) — _dep: LP-12_ — **desbloqueado e agora é o item de maior risco em aberto**: desde o LP-12 há dados reais em produção sem nenhuma cópia fora da VPS. "Backup que fica só dentro da VPS não é backup" (`02-architecture.md`)
 
 ## Fase 2 — CRM MVP
 
 > Objetivo: substituir caderno/planilha. Invariantes do domínio: `project-memory/04-domain-model.md`.
+>
+> Status verificado em 2026-08-05: CRM-01..CRM-07, CRM-09 e CRM-10 estão commitados na `main` (commit `59929fe`, "Phase two complete – first version of the CRM"). Restam apenas o CRM-08 e os itens das fases seguintes.
 
 - [x] **CRM-01** → `specs/crm-auth` — ADR + implementação de autenticação (usuária única): login, sessão, guard das rotas da API e do grupo `(crm)` no web — _dep: LP-01_ — ADR-0012; handoff 2026-07-17
 - [x] **CRM-02** → `specs/crm-layout` — Layout do CRM: navegação mobile-first do grupo `(crm)`, shell autenticado — _dep: CRM-01_ — handoff 2026-07-17
 - [x] **CRM-03** → `specs/crm-clients` — Clientes: CRUD com campos do domínio (aniversário, tom de pele, observações), busca, botão WhatsApp — _dep: CRM-02_ — handoff 2026-07-18 (BUG-001/002 registrados)
-- [R] **CRM-04** → `specs/crm-leads` — Leads no CRM: lista dos capturados na landing, status (novo → contatado → convertido/descartado), conversão lead → cliente — _dep: CRM-02_ — handoff 2026-07-18 (fecha known-issue do rate limit; BUG-003 registrado)
-- [R] **CRM-05** → `specs/crm-products` — Produtos & estoque: CRUD com custo/preço em centavos, quantidade, alerta de estoque baixo, capital parado — _dep: CRM-02_ — handoff 2026-07-18 (QA 2 rodadas: CRÍTICO de RSC×client corrigido; lesson graduada)
-- [R] **CRM-06** → `specs/crm-sales` — Vendas: registro com itens, baixa atômica de estoque, formas de pagamento, fiado/parcelado com recebíveis e baixa de pagamento ("quem me deve") — _dep: CRM-03, CRM-05_ — handoff 2026-07-18 (ADR-0013; fecha known-issue LGPD×vendas; BUG-004/005 registrados)
-- [R] **CRM-07** → `specs/crm-dashboard` — Dashboard: vendas do mês, lucro estimado, a receber, meta mensal — _dep: CRM-06_ — handoff 2026-07-19 (ADR-0014 snapshot de custo/lucro/meta; QA APROVADO 674 testes; size L)
+- [x] **CRM-04** → `specs/crm-leads` — Leads no CRM: lista dos capturados na landing, status (novo → contatado → convertido/descartado), conversão lead → cliente — _dep: CRM-02_ — handoff 2026-07-18 (fecha known-issue do rate limit; BUG-003 registrado)
+- [x] **CRM-05** → `specs/crm-products` — Produtos & estoque: CRUD com custo/preço em centavos, quantidade, alerta de estoque baixo, capital parado — _dep: CRM-02_ — handoff 2026-07-18 (QA 2 rodadas: CRÍTICO de RSC×client corrigido; lesson graduada)
+- [x] **CRM-06** → `specs/crm-sales` — Vendas: registro com itens, baixa atômica de estoque, formas de pagamento, fiado/parcelado com recebíveis e baixa de pagamento ("quem me deve") — _dep: CRM-03, CRM-05_ — handoff 2026-07-18 (ADR-0013; fecha known-issue LGPD×vendas; BUG-004/005 registrados)
+- [x] **CRM-07** → `specs/crm-dashboard` — Dashboard: vendas do mês, lucro estimado, a receber, meta mensal — _dep: CRM-06_ — handoff 2026-07-19 (ADR-0014 snapshot de custo/lucro/meta; QA APROVADO 674 testes; size L)
 - [ ] **CRM-08** — Catálogo da landing alimentado pelos produtos do CRM (flag "destaque") — _dep: CRM-05_
-- [R] **CRM-09** → `specs/crm-orders` — Pedidos de reposição: controle do que a consultora precisa pedir à Mary Kay, com ciclo de status (rascunho → pedido → entregue / cancelado), itens vinculados a produtos, sugestão a partir do estoque baixo e entrada atômica de estoque na entrega — _dep: CRM-05_ — handoff 2026-07-20 (ADR-0015; QA APROVADO rodada 1, 784 testes)
-- [R] **CRM-10** → `specs/order-item-client-link` — Encomendas de clientes no pedido: vínculo opcional de cliente por item (join derivado, sem snapshot — ADR-0016), cadastro rápido de cliente no form (nome + WhatsApp) e visão "para quem é" no detalhe — _dep: CRM-03, CRM-09_ — handoff 2026-07-20 (ADR-0016; QA APROVADO rodada 1, 807 testes, runtime provado)
+- [x] **CRM-09** → `specs/crm-orders` — Pedidos de reposição: controle do que a consultora precisa pedir à Mary Kay, com ciclo de status (rascunho → pedido → entregue / cancelado), itens vinculados a produtos, sugestão a partir do estoque baixo e entrada atômica de estoque na entrega — _dep: CRM-05_ — handoff 2026-07-20 (ADR-0015; QA APROVADO rodada 1, 784 testes)
+- [x] **CRM-10** → `specs/order-item-client-link` — Encomendas de clientes no pedido: vínculo opcional de cliente por item (join derivado, sem snapshot — ADR-0016), cadastro rápido de cliente no form (nome + WhatsApp) e visão "para quem é" no detalhe — _dep: CRM-03, CRM-09_ — handoff 2026-07-20 (ADR-0016; QA APROVADO rodada 1, 807 testes, runtime provado)
 
 ## Fase 3 — Relacionamento
 
@@ -91,21 +91,24 @@
 - [ ] **REL-02** — Lembretes de recompra: produto consumível comprado há X dias ⇒ sugestão de follow-up — _dep: CRM-06_
 - [ ] **REL-03** — Aniversariantes da semana/mês com mensagem pronta — _dep: CRM-03_
 - [ ] **REL-04** — Follow-up de leads parados (sem contato há N dias) — _dep: CRM-04_
-- [ ] **REL-05** — Central "com quem falar hoje": tela única agregando REL-02/03/04, cada item com botão WhatsApp com mensagem modelo — _dep: REL-02, REL-03, REL-04_
+- [R] **REL-06** → `specs/crm-appointments` — Agenda de compromissos: sessões de demonstração/análise de pele, entrega e follow-up, com vínculo a cliente **e a lead** (a isca da landing é uma sessão), vínculo opcional à venda gerada ("essa sessão virou venda?"), vista mobile-first Hoje/Semana/Próximos, botão "Confirmar pelo WhatsApp" e link "Adicionar ao Google Agenda" (sem OAuth). Decisão de fuso horário da aplicação — _dep: CRM-03, CRM-04, CRM-06_ — **movido de MKT-03** (Fase 4) por decisão do humano em 2026-08-05: precede o REL-05, que deve agregar os compromissos do dia
+- [ ] **REL-08** — Cadastro rápido: detectar pessoa duplicada pelo WhatsApp antes de criar (cliente ou lead) — _dep: REL-06_ — achado da QA do incremento em 2026-08-06: hoje nada impede criar a mesma pessoa duas vezes pelo formulário da agenda
+- [ ] **REL-05** — Central "com quem falar hoje": tela única agregando REL-02/03/04 **e os compromissos do dia (REL-06)**, cada item com botão WhatsApp com mensagem modelo — _dep: REL-02, REL-03, REL-04, REL-06_
 
 ## Fase 4 — Marketing e extras
 
 - [ ] **MKT-01** — Mini-campanhas: filtro de clientes + mensagem modelo para copiar — _dep: REL-05_
 - [ ] **MKT-02** — Relatórios: produtos mais vendidos, melhores clientes, lucro por produto — _dep: CRM-07_
-- [ ] **MKT-03** — Agenda de sessões de demonstração/análise de pele — _dep: CRM-03_
+- [-] **MKT-03** — Agenda de sessões de demonstração/análise de pele — **movido para a Fase 3 como REL-06** em 2026-08-05 (o humano priorizou; é pré-requisito da central do REL-05)
 - [ ] **MKT-04** — Metas e acompanhamento de comissão/nível Mary Kay — _dep: CRM-07_
 
 ## Infra contínua (sem fase — quando o gatilho disparar)
 
 - [x] **INF-01** → `specs/github-actions-ci-deploy` — CI (lint + typecheck + testes) quando houver remote — _gatilho disparado: humano vai publicar o repo no GitHub (2026-07-17)_
 - [x] **INF-04** → `specs/github-actions-ci-deploy` — Deploy contínuo via GitHub Actions (push na `main` → CI → deploy SSH na VPS), substituindo o deploy manual da máquina local (decisão do humano; gera ADR) — _dep: INF-01, LP-11_
-- [R] **INF-07** — Snapshot do banco antes da migração no pipeline de deploy (fail-closed, retenção 5, `~/backups/predeploy-<tag>-<UTC>.sql.gz` na VPS) — ADR-0019; edição direta (infra/docs), size P — pedido do humano em 2026-08-06, após o LP-12 confirmar que há dados reais em produção. **Não substitui o LP-13** (cópia externa)
+- [x] **INF-07** — Snapshot do banco antes da migração no pipeline de deploy (fail-closed, retenção 5, `~/backups/predeploy-<tag>-<UTC>.sql.gz` na VPS) — ADR-0019; **commitado e deployado em 2026-08-06** (PR #1, `d8756e8`), snapshot confirmado na VPS pelo humano; edição direta (infra/docs), size P — pedido do humano em 2026-08-06, após o LP-12 confirmar que há dados reais em produção. **Não substitui o LP-13** (cópia externa)
+- [ ] **INF-08** — Gate contra reexport de Server Action: regra de lint proibindo `export { … } from "…/actions"` em arquivo `"use server"`, **ou** teste pós-build lendo `.next/server/server-reference-manifest.json` e assertando o mínimo de ids por rota — _gatilho disparado_: o bug de 2026-08-06 (agenda inteira com `404 Server action not found` em produção) passou por lint, typecheck, 1119 testes e `next build`; hoje a única proteção é um comentário e uma lesson
 - [ ] **INF-02** — `linker: "isolated"` no Bun — _gatilho: segundo bug de phantom dependency_
 - [ ] **INF-03** — Turborepo — _gatilho: pipeline > 2–3 min ou > 5 packages_
-- [R] **INF-06** — Split de domínios para produção: landing na raiz + CRM em `gestao.*` (Caddy por host, env `CRM_DOMAIN`, seed da consultora em produção, guia de deploy atualizado — ADR-0017) — pedido do humano em 2026-07-20; edição direta (docs/infra)
+- [x] **INF-06** — Split de domínios para produção: landing na raiz + CRM em `gestao.*` (Caddy por host, env `CRM_DOMAIN`, seed da consultora em produção, guia de deploy atualizado — ADR-0017) — pedido do humano em 2026-07-20; edição direta (docs/infra); commitado em `59929fe`
 - [x] **INF-05** → `specs/ghcr-image-deploy` — Deploy por imagens via GHCR: pipeline builda e publica (`web`/`api`/`migrate`), VPS só faz pull+up — servidor fica apenas com arquivos de infra (pedido do humano; gera ADR que substitui parte do 0010) — _dep: INF-04_

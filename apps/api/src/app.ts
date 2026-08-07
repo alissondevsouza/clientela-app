@@ -1,4 +1,6 @@
 import { Elysia } from "elysia";
+import { createAppointmentsRoutes } from "./modules/appointments/appointments.routes";
+import type { AppointmentsService } from "./modules/appointments/appointments.service";
 import { createAuthRoutes } from "./modules/auth/auth.routes";
 import type { AuthService } from "./modules/auth/auth.service";
 import { createClientsRoutes } from "./modules/clients/clients.routes";
@@ -28,6 +30,7 @@ export type AppDeps = {
   salesService: SalesService;
   ordersService: OrdersService;
   dashboardService: DashboardService;
+  appointmentsService: AppointmentsService;
 };
 
 // Montagem do app com dependências injetadas (composition root em index.ts as
@@ -45,6 +48,7 @@ export const createApp = ({
   salesService,
   ordersService,
   dashboardService,
+  appointmentsService,
 }: AppDeps) =>
   new Elysia()
     .use(errorHandler)
@@ -57,4 +61,7 @@ export const createApp = ({
     .use(createProductsRoutes({ service: productsService, authService }))
     .use(createSalesRoutes({ service: salesService, authService }))
     .use(createOrdersRoutes({ service: ordersService, authService }))
-    .use(createDashboardRoutes({ service: dashboardService, authService }));
+    .use(createDashboardRoutes({ service: dashboardService, authService }))
+    .use(
+      createAppointmentsRoutes({ service: appointmentsService, authService }),
+    );

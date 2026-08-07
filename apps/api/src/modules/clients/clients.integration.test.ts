@@ -19,6 +19,8 @@ import {
   RATE_LIMIT_MAX_REQUESTS,
   RATE_LIMIT_WINDOW_MS,
 } from "../../plugins/rate-limit";
+import { createAppointmentsRepository } from "../appointments/appointments.repository";
+import { createAppointmentsService } from "../appointments/appointments.service";
 import { createAuthRepository } from "../auth/auth.repository";
 import {
   LOGIN_RATE_LIMIT_MAX,
@@ -192,6 +194,10 @@ describe("clients (integração)", () => {
       repository: createDashboardRepository(ctx.db),
       clock: () => new Date(),
     });
+    const appointmentsService = createAppointmentsService({
+      repository: createAppointmentsRepository(ctx.db),
+      clock: () => new Date(),
+    });
     return createApp({
       leadsService,
       rateLimiter,
@@ -202,6 +208,7 @@ describe("clients (integração)", () => {
       salesService,
       ordersService,
       dashboardService,
+      appointmentsService,
     });
   };
 

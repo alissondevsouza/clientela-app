@@ -1,5 +1,6 @@
 import type {
   Client,
+  CreateLeadCrm,
   CrmLead,
   LeadCaptureRequest,
   LeadCaptureResponse,
@@ -19,6 +20,7 @@ export type ListLeadsParams = {
   page: number;
   perPage: number;
   status?: LeadStatus;
+  search?: string;
 };
 
 // Dados da cliente compostos pelo service a partir do lead + consultora da
@@ -41,6 +43,8 @@ export type LeadsRepositoryPort = {
     whatsapp: string;
     interest?: string;
     consentAt: Date;
+    source?: string;
+    status?: LeadStatus;
   }) => Promise<{ id: string }>;
   list: (
     params: ListLeadsParams,
@@ -71,6 +75,11 @@ const INTEREST_NOTE_PREFIX = "Interesse (lead): ";
 const isHoneypotTriggered = (website: string | undefined): boolean =>
   website !== undefined && website.length > 0;
 
+// Origem e status iniciais do lead criado pelo CRM (RF-24/ADR-0020): distingue
+// o cadastro rápido feito pela consultora da captura pública da landing.
+const CRM_MANUAL_SOURCE = "crm_manual";
+const CRM_MANUAL_INITIAL_STATUS: LeadStatus = "new";
+
 export const createLeadsService = ({
   repository,
   clock,
@@ -97,6 +106,33 @@ export const createLeadsService = ({
     return { id: inserted.id };
   };
 
+  // Criação de lead pelo CRM (RF-24, ADR-0020): a consultora cadastra a pessoa
+  // manualmente, sem checkbox de consentimento — o fundamento é o relato dela
+  // na conversa. `consent_at` usa o clock injetado (nunca `new Date()` direto,
+  // testabilidade); `source = "crm_manual"` distingue da captura pública
+  // (`source` default "landing") e `status` nasce `new`, igual ao funil normal.
+  // Reusa `repository.insert` (mesma porta da captura pública); busca o lead
+  // completo em seguida porque `insert` devolve só `{ id }` (minimização de
+  // dado pessoal na resposta da captura pública — aqui a rota é autenticada e
+  // o contrato de saída é o `CrmLead` completo).
+  const createManual = async (input: CreateLeadCrm): Promise<CrmLead> => {
+    const inserted = await repository.insert({
+      name: input.name,
+      whatsapp: input.whatsapp,
+      consentAt: clock(),
+      source: CRM_MANUAL_SOURCE,
+      status: CRM_MANUAL_INITIAL_STATUS,
+    });
+
+    const lead = await repository.findById(inserted.id);
+    if (!lead) {
+      throw new Error(
+        "Falha ao criar lead pelo CRM: findById não encontrou o lead recém-criado",
+      );
+    }
+    return lead;
+  };
+
   // Listagem autenticada do CRM: monta o envelope paginado a partir do
   // repositório (que aplica filtro e ordem `created_at desc, id desc`).
   const listForCrm = async (
@@ -106,6 +142,7 @@ export const createLeadsService = ({
       page: query.page,
       perPage: query.perPage,
       status: query.status,
+      search: query.search,
     });
 
     return {
@@ -114,6 +151,19 @@ export const createLeadsService = ({
       perPage: query.perPage,
       total,
     };
+  };
+
+  // Detalhe do lead (RF-22 do crm-appointments: resolve o nome do lead
+  // pré-selecionado por id, sem depender de busca textual). `leads` não tem
+  // `consultant_id` (drift documentado em `04-domain-model.md`) — mesma
+  // checagem de só-existência já usada por `updateStatus`/`convertToClient`,
+  // nunca escopada por consultora.
+  const getById = async (id: string): Promise<CrmLead> => {
+    const lead = await repository.findById(id);
+    if (!lead) {
+      throw new LeadNotFoundError();
+    }
+    return lead;
   };
 
   // Transição de status no funil. Lead convertido é terminal (409); inexistente
@@ -169,5 +219,12 @@ export const createLeadsService = ({
     });
   };
 
-  return { capture, listForCrm, updateStatus, convertToClient };
+  return {
+    capture,
+    createManual,
+    listForCrm,
+    getById,
+    updateStatus,
+    convertToClient,
+  };
 };

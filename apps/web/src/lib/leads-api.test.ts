@@ -1,7 +1,9 @@
-import type { Client, CrmLead } from "@clientela/shared";
+import type { Client, CreateLeadCrmInput, CrmLead } from "@clientela/shared";
 import { describe, expect, it } from "vitest";
 import {
   convertLead,
+  createLead,
+  getLead,
   LEAD_STATUS_LABELS,
   type LeadsApiDeps,
   listLeads,
@@ -130,6 +132,44 @@ describe("listLeads", () => {
     expect(calls[0]?.url).toBe("http://localhost:3001/leads?status=new");
   });
 
+  it("inclui search na querystring quando informado", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listLeads({ search: "Maria" }, depsWith(fetchImpl));
+
+    expect(calls[0]?.url).toBe("http://localhost:3001/leads?search=Maria");
+  });
+
+  it("combina search com status e page na querystring", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listLeads(
+      { page: 3, status: "new", search: "11912345678" },
+      depsWith(fetchImpl),
+    );
+
+    expect(calls[0]?.url).toBe(
+      "http://localhost:3001/leads?page=3&status=new&search=11912345678",
+    );
+  });
+
+  it("omite search da querystring quando ausente", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listLeads({ page: 1 }, depsWith(fetchImpl));
+
+    expect(calls[0]?.url).toBe("http://localhost:3001/leads?page=1");
+  });
+
   it("mapeia erro da API para mensagem pt-BR do envelope", async () => {
     const { fetchImpl } = stubFetch(
       () =>
@@ -163,6 +203,155 @@ describe("listLeads", () => {
     });
 
     const result = await listLeads({}, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.message).toMatch(/conexão/i);
+  });
+});
+
+describe("getLead", () => {
+  it("faz GET /leads/:id com Bearer e retorna o lead", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(JSON.stringify(sampleLead), { status: 200 }),
+    );
+
+    const result = await getLead(LEAD_ID, depsWith(fetchImpl));
+
+    expect(result).toEqual({ ok: true, lead: sampleLead });
+    expect(calls[0]?.init?.method).toBe("GET");
+    expect(headerValue(calls[0]?.init, "authorization")).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    expect(calls[0]?.url).toBe(`http://localhost:3001/leads/${LEAD_ID}`);
+  });
+
+  it("marca notFound em 404", async () => {
+    const { fetchImpl } = stubFetch(
+      () =>
+        new Response(errorEnvelope("LEAD_NOT_FOUND", "não encontrado"), {
+          status: 404,
+        }),
+    );
+
+    const result = await getLead(LEAD_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.notFound).toBe(true);
+  });
+
+  it("retorna ok:false quando o 200 tem corpo malformado", async () => {
+    const { fetchImpl } = stubFetch(
+      () => new Response(JSON.stringify({ oops: true }), { status: 200 }),
+    );
+
+    const result = await getLead(LEAD_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.notFound).toBe(false);
+  });
+
+  it("retorna mensagem genérica quando a rede falha", async () => {
+    const { fetchImpl } = stubFetch(() => {
+      throw new Error("network down");
+    });
+
+    const result = await getLead(LEAD_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.message).toMatch(/conexão/i);
+  });
+});
+
+describe("createLead", () => {
+  const validValues: CreateLeadCrmInput = {
+    name: "João Pereira",
+    whatsapp: "11987654321",
+  };
+
+  const createdLead: CrmLead = {
+    ...sampleLead,
+    id: CLIENT_ID,
+    name: "João Pereira",
+    source: "crm_manual",
+  };
+
+  it("faz POST /leads/manual com Bearer, JSON e corpo validado; retorna 201", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(JSON.stringify(createdLead), { status: 201 }),
+    );
+
+    const result = await createLead(validValues, depsWith(fetchImpl));
+
+    expect(result).toEqual({ ok: true, lead: createdLead });
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(headerValue(calls[0]?.init, "authorization")).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    expect(headerValue(calls[0]?.init, "content-type")).toBe(
+      "application/json",
+    );
+    expect(calls[0]?.url).toBe("http://localhost:3001/leads/manual");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      name: "João Pereira",
+      whatsapp: "11987654321",
+    });
+  });
+
+  it("não envia requisição quando o input é inválido (WhatsApp inválido)", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(JSON.stringify(createdLead), { status: 201 }),
+    );
+
+    const result = await createLead(
+      { name: "João Pereira", whatsapp: "123" },
+      depsWith(fetchImpl),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("mapeia erro da API para mensagem pt-BR do envelope", async () => {
+    const { fetchImpl } = stubFetch(
+      () =>
+        new Response(errorEnvelope("VALIDATION", "WhatsApp inválido"), {
+          status: 422,
+        }),
+    );
+
+    const result = await createLead(validValues, depsWith(fetchImpl));
+
+    expect(result).toEqual({ ok: false, message: "WhatsApp inválido" });
+  });
+
+  it("retorna ok:false quando o corpo de sucesso é malformado", async () => {
+    const { fetchImpl } = stubFetch(
+      () => new Response(JSON.stringify({ id: "x" }), { status: 201 }),
+    );
+
+    const result = await createLead(validValues, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+  });
+
+  it("retorna mensagem genérica quando a rede falha", async () => {
+    const { fetchImpl } = stubFetch(() => {
+      throw new Error("network down");
+    });
+
+    const result = await createLead(validValues, depsWith(fetchImpl));
 
     expect(result.ok).toBe(false);
     if (result.ok) {

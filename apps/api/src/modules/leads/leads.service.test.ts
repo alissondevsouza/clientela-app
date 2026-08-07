@@ -1,4 +1,9 @@
-import type { Client, CrmLead, LeadCaptureRequest } from "@clientela/shared";
+import type {
+  Client,
+  CreateLeadCrm,
+  CrmLead,
+  LeadCaptureRequest,
+} from "@clientela/shared";
 import { describe, expect, it } from "vitest";
 import { LeadAlreadyConvertedError, LeadNotFoundError } from "./leads.errors";
 import {
@@ -44,6 +49,19 @@ const createFakeRepository = (initial: CrmLead[] = []) => {
   const repository: LeadsRepositoryPort = {
     insert: async (lead) => {
       insertCalls.push(lead);
+      // Espelha o repositório real: o insert persiste a linha, então
+      // `findById(REPO_ID)` logo depois (createManual) enxerga o lead recém-
+      // criado com os campos que o repositório real gravaria por default.
+      store.set(REPO_ID, {
+        id: REPO_ID,
+        name: lead.name,
+        whatsapp: lead.whatsapp,
+        interest: lead.interest ?? null,
+        source: lead.source ?? "landing",
+        status: lead.status ?? "new",
+        clientId: null,
+        createdAt: FIXED_NOW.toISOString(),
+      });
       return { id: REPO_ID };
     },
     list: async ({ page, perPage, status }) => {
@@ -178,6 +196,64 @@ describe("leadsService.capture", () => {
   });
 });
 
+describe("leadsService.createManual (RF-24, crm-appointments)", () => {
+  const validCrmInput: CreateLeadCrm = {
+    name: "Maria Silva",
+    whatsapp: "11987654321",
+  };
+
+  it("grava source crm_manual, consent_at do clock e status new, e devolve o lead completo", async () => {
+    const { repository, insertCalls } = createFakeRepository();
+    const service = buildService(repository);
+
+    const lead = await service.createManual(validCrmInput);
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0]).toEqual({
+      name: "Maria Silva",
+      whatsapp: "11987654321",
+      consentAt: FIXED_NOW,
+      source: "crm_manual",
+      status: "new",
+    });
+    expect(lead).toEqual({
+      id: REPO_ID,
+      name: "Maria Silva",
+      whatsapp: "11987654321",
+      interest: null,
+      source: "crm_manual",
+      status: "new",
+      clientId: null,
+      createdAt: FIXED_NOW.toISOString(),
+    });
+  });
+
+  it("não envia interest nem consent ao repositório (fora do cadastro rápido)", async () => {
+    const { repository, insertCalls } = createFakeRepository();
+    const service = buildService(repository);
+
+    await service.createManual(validCrmInput);
+
+    expect(insertCalls[0]).not.toHaveProperty("interest");
+    expect(insertCalls[0]).not.toHaveProperty("consent");
+  });
+
+  it("propaga erro do repositório", async () => {
+    const { repository } = createFakeRepository();
+    const failing: LeadsRepositoryPort = {
+      ...repository,
+      insert: async () => {
+        throw new Error("db indisponível");
+      },
+    };
+    const service = buildService(failing);
+
+    await expect(service.createManual(validCrmInput)).rejects.toThrow(
+      "db indisponível",
+    );
+  });
+});
+
 describe("leadsService.listForCrm", () => {
   const oldest = buildLead({
     id: "11111111-1111-7111-8111-111111111111",
@@ -234,6 +310,31 @@ describe("leadsService.listForCrm", () => {
     expect(page1.total).toBe(3);
     expect(page2.data.map((lead) => lead.id)).toEqual([oldest.id]);
     expect(page2.total).toBe(3);
+  });
+});
+
+describe("leadsService.getById", () => {
+  const LEAD_ID = "66666666-6666-7666-8666-666666666666";
+
+  it("devolve o lead quando existe", async () => {
+    const { repository } = createFakeRepository([
+      buildLead({ id: LEAD_ID, name: "Beatriz Lima" }),
+    ]);
+    const service = buildService(repository);
+
+    const lead = await service.getById(LEAD_ID);
+
+    expect(lead.id).toBe(LEAD_ID);
+    expect(lead.name).toBe("Beatriz Lima");
+  });
+
+  it("rejeita com LeadNotFoundError quando o lead não existe", async () => {
+    const { repository } = createFakeRepository();
+    const service = buildService(repository);
+
+    await expect(
+      service.getById("00000000-0000-7000-8000-000000000000"),
+    ).rejects.toThrow(LeadNotFoundError);
   });
 });
 

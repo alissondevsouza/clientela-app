@@ -384,8 +384,10 @@ O CRM (`gestao.…`) só tem **uma** usuária — a consultora — e ela nasce p
 ssh deploy@IP_DA_VPS
 cd /opt/clientela
 
-# A senha é lida sem ecoar no terminal e SEM entrar no histórico do shell:
-read -rs SEED_CONSULTANT_PASSWORD && export SEED_CONSULTANT_PASSWORD
+# Defina aqui a SENHA que a consultora usará no login do CRM: rode a linha
+# abaixo, digite a senha quando o prompt aparecer (nada é exibido enquanto
+# digita — é proposital) e aperte Enter. Ela não fica no histórico do shell.
+read -rsp "Senha da consultora: " SEED_CONSULTANT_PASSWORD; echo; export SEED_CONSULTANT_PASSWORD
 export SEED_CONSULTANT_NAME="Lais Barbosa"
 export SEED_CONSULTANT_EMAIL="email-da-consultora@exemplo.com"
 export SEED_CONSULTANT_WHATSAPP="+5511912345678"   # com DDI
