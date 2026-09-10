@@ -276,6 +276,8 @@ describe("appointments — ciclo de vida e vínculo de venda (integração)", ()
     consultantId: string,
     values: SeedSaleValues = {},
   ): Promise<string> => {
+    const timestamp = new Date();
+    const status = values.status ?? "completed";
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -284,7 +286,19 @@ describe("appointments — ciclo de vida e vínculo de venda (integração)", ()
         clientName: values.clientName ?? "Cliente Semeada",
         totalCents: values.totalCents ?? 10_000,
         paymentMethod: values.paymentMethod ?? "credit",
-        status: values.status ?? "completed",
+        paymentCondition:
+          (values.paymentMethod ?? "credit") === "credit"
+            ? "installments"
+            : "received",
+        installments: 1,
+        status,
+        soldAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        ...(status === "completed"
+          ? { deliveredAt: timestamp, completedAt: timestamp }
+          : {}),
+        ...(status === "canceled" ? { canceledAt: timestamp } : {}),
       })
       .returning({ id: sales.id });
     if (!row) {

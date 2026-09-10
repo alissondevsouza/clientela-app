@@ -82,6 +82,7 @@ const insertSale = async (
   consultantId: string,
   overrides: SaleOverrides = {},
 ) => {
+  const paymentMethod = overrides.paymentMethod ?? "cash";
   const [inserted] = await ctx.db
     .insert(sales)
     .values({
@@ -89,7 +90,9 @@ const insertSale = async (
       clientId: overrides.clientId ?? null,
       clientName: overrides.clientName ?? "Cliente Snapshot",
       totalCents: overrides.totalCents ?? 3990,
-      paymentMethod: overrides.paymentMethod ?? "cash",
+      paymentMethod,
+      paymentCondition:
+        paymentMethod === "credit" ? "installments" : "received",
     })
     .returning();
 
@@ -115,7 +118,7 @@ describe("tabelas de vendas (integração)", () => {
     await ctx.truncateAll();
   });
 
-  it("insere venda aplicando defaults do banco (status completed, sold_at, timestamps)", async () => {
+  it("insere venda aplicando defaults finais do banco", async () => {
     const consultant = await insertConsultant(ctx, "sale-insert@example.com");
     const client = await insertClient(ctx, consultant.id);
 
@@ -137,8 +140,14 @@ describe("tabelas de vendas (integração)", () => {
     expect(inserted?.clientName).toBe("Cliente Feliz");
     expect(inserted?.totalCents).toBe(3990);
     expect(inserted?.paymentMethod).toBe("pix");
-    // Default do banco: venda nasce concluída (invariante 5 do domínio).
-    expect(inserted?.status).toBe("completed");
+    expect(inserted?.status).toBe("open");
+    expect(inserted?.paymentCondition).toBe("received");
+    expect(inserted?.cardType).toBeNull();
+    expect(inserted?.installments).toBe(1);
+    expect(inserted?.paymentPlanKnown).toBe(true);
+    expect(inserted?.deliveredAt).toBeNull();
+    expect(inserted?.completedAt).toBeNull();
+    expect(inserted?.canceledAt).toBeNull();
     expect(inserted?.soldAt).toBeInstanceOf(Date);
     expect(inserted?.createdAt).toBeInstanceOf(Date);
     expect(inserted?.updatedAt).toBeInstanceOf(Date);
@@ -184,6 +193,165 @@ describe("tabelas de vendas (integração)", () => {
         VALUES (${consultant.id}, 'Cliente', 1000, 'cash', 'refunded')
       `,
     ).rejects.toThrow();
+  });
+
+  it("aceita venda em aberto com a matriz de pagamento padrão", async () => {
+    const consultant = await insertConsultant(ctx, "sale-open@example.com");
+
+    const [inserted] = await ctx.db
+      .insert(sales)
+      .values({
+        consultantId: consultant.id,
+        clientName: "Cliente em aberto",
+        totalCents: 3990,
+        paymentMethod: "pix",
+        status: "open",
+      })
+      .returning();
+
+    expect(inserted?.status).toBe("open");
+  });
+
+  it("rejeita uma combinação inválida da matriz de pagamento", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "sale-matrix-invalid@example.com",
+    );
+
+    await expect(
+      ctx.sql`
+        INSERT INTO sales (
+          consultant_id, client_name, total_cents, payment_method,
+          payment_condition, installments
+        ) VALUES (
+          ${consultant.id}, 'Cliente', 1000, 'cash', 'installments', 2
+        )
+      `,
+    ).rejects.toThrow();
+  });
+
+  it("aceita a matriz persistível de cartão de crédito parcelado", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "sale-matrix-card@example.com",
+    );
+
+    const [sale] = await ctx.db
+      .insert(sales)
+      .values({
+        consultantId: consultant.id,
+        clientName: "Cliente cartão",
+        totalCents: 1000,
+        paymentMethod: "card",
+        paymentCondition: "installments",
+        cardType: "credit",
+        installments: 2,
+      })
+      .returning();
+
+    expect(sale).toMatchObject({
+      paymentMethod: "card",
+      paymentCondition: "installments",
+      cardType: "credit",
+      installments: 2,
+    });
+  });
+
+  it("rejeita status e terminais temporalmente incoerentes", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "sale-temporal-invalid@example.com",
+    );
+    const timestamp = "2026-09-10T12:00:00.000Z";
+
+    await expect(
+      ctx.sql`
+        INSERT INTO sales (
+          consultant_id, client_name, total_cents, payment_method,
+          payment_condition, installments, status, sold_at, created_at,
+          updated_at, completed_at
+        ) VALUES (
+          ${consultant.id}, 'Cliente', 1000, 'pix', 'received', 1,
+          'open', ${timestamp}::timestamptz, ${timestamp}::timestamptz,
+          ${timestamp}::timestamptz, ${timestamp}::timestamptz
+        )
+      `,
+    ).rejects.toThrow();
+  });
+
+  it("rejeita cada relação inválida da matriz temporal de vendas", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "sale-temporal-relations@example.com",
+    );
+    const base = "2026-09-10T12:00:00.000Z";
+    const later = "2026-09-10T13:00:00.000Z";
+    const latest = "2026-09-10T14:00:00.000Z";
+    const cases = [
+      {
+        status: "open",
+        createdAt: later,
+        soldAt: base,
+        updatedAt: later,
+        deliveredAt: null,
+        completedAt: null,
+        canceledAt: null,
+      },
+      {
+        status: "open",
+        createdAt: base,
+        soldAt: later,
+        updatedAt: base,
+        deliveredAt: null,
+        completedAt: null,
+        canceledAt: null,
+      },
+      {
+        status: "open",
+        createdAt: base,
+        soldAt: later,
+        updatedAt: latest,
+        deliveredAt: base,
+        completedAt: null,
+        canceledAt: null,
+      },
+      {
+        status: "completed",
+        createdAt: base,
+        soldAt: base,
+        updatedAt: latest,
+        deliveredAt: null,
+        completedAt: later,
+        canceledAt: null,
+      },
+      {
+        status: "canceled",
+        createdAt: base,
+        soldAt: base,
+        updatedAt: latest,
+        deliveredAt: later,
+        completedAt: null,
+        canceledAt: base,
+      },
+    ] as const;
+
+    for (const values of cases) {
+      await expect(
+        ctx.sql`
+          INSERT INTO sales (
+            consultant_id, client_name, total_cents, payment_method,
+            payment_condition, installments, status, sold_at, created_at,
+            updated_at, delivered_at, completed_at, canceled_at
+          ) VALUES (
+            ${consultant.id}, 'Cliente', 1000, 'cash', 'received', 1,
+            ${values.status}, ${values.soldAt}::timestamptz,
+            ${values.createdAt}::timestamptz, ${values.updatedAt}::timestamptz,
+            ${values.deliveredAt}::timestamptz, ${values.completedAt}::timestamptz,
+            ${values.canceledAt}::timestamptz
+          )
+        `,
+      ).rejects.toThrow();
+    }
   });
 
   it("desvincula a venda ao excluir a cliente (FK ON DELETE SET NULL), preservando o snapshot", async () => {
@@ -393,6 +561,93 @@ describe("tabelas de vendas (integração)", () => {
     expect(inserted?.paidAt).toBeNull();
     expect(inserted?.createdAt).toBeInstanceOf(Date);
     expect(inserted?.updatedAt).toBeInstanceOf(Date);
+  });
+
+  it("rejeita recebível scheduled sem due_date", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "recv-expansion@example.com",
+    );
+    const sale = await insertSale(ctx, consultant.id, {
+      paymentMethod: "credit",
+    });
+
+    await expect(
+      ctx.db.insert(receivables).values({
+        saleId: sale.id,
+        amountCents: 3990,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("aceita vencimento na entrega e rejeita data contraditória", async () => {
+    const consultant = await insertConsultant(ctx, "recv-due-kind@example.com");
+    const sale = await insertSale(ctx, consultant.id);
+
+    const [onDelivery] = await ctx.db
+      .insert(receivables)
+      .values({ saleId: sale.id, amountCents: 3990, dueKind: "on_delivery" })
+      .returning();
+
+    expect(onDelivery).toMatchObject({ dueDate: null, dueKind: "on_delivery" });
+    await expect(
+      ctx.sql`
+        INSERT INTO receivables (sale_id, amount_cents, due_date, due_kind)
+        VALUES (${sale.id}, 1000, '2026-09-11', 'on_delivery')
+      `,
+    ).rejects.toThrow();
+  });
+
+  it("rejeita recebível pago e anulado ao mesmo tempo", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "recv-temporal-invalid@example.com",
+    );
+    const sale = await insertSale(ctx, consultant.id);
+    const timestamp = "2026-09-10T12:00:00.000Z";
+
+    await expect(
+      ctx.sql`
+        INSERT INTO receivables (
+          sale_id, amount_cents, due_date, due_kind, paid_at, voided_at,
+          created_at, updated_at
+        ) VALUES (
+          ${sale.id}, 1000, '2026-09-10', 'scheduled',
+          ${timestamp}::timestamptz, ${timestamp}::timestamptz,
+          ${timestamp}::timestamptz, ${timestamp}::timestamptz
+        )
+      `,
+    ).rejects.toThrow();
+  });
+
+  it("rejeita cada relação inválida da matriz temporal de recebíveis", async () => {
+    const consultant = await insertConsultant(
+      ctx,
+      "recv-temporal-relations@example.com",
+    );
+    const sale = await insertSale(ctx, consultant.id);
+    const base = "2026-09-10T12:00:00.000Z";
+    const later = "2026-09-10T13:00:00.000Z";
+    const cases = [
+      { createdAt: later, updatedAt: base, paidAt: null, voidedAt: null },
+      { createdAt: later, updatedAt: later, paidAt: base, voidedAt: null },
+      { createdAt: base, updatedAt: base, paidAt: null, voidedAt: later },
+    ] as const;
+
+    for (const values of cases) {
+      await expect(
+        ctx.sql`
+          INSERT INTO receivables (
+            sale_id, amount_cents, due_date, due_kind, paid_at, voided_at,
+            created_at, updated_at
+          ) VALUES (
+            ${sale.id}, 1000, '2026-09-10', 'scheduled',
+            ${values.paidAt}::timestamptz, ${values.voidedAt}::timestamptz,
+            ${values.createdAt}::timestamptz, ${values.updatedAt}::timestamptz
+          )
+        `,
+      ).rejects.toThrow();
+    }
   });
 
   it("rejeita amount_cents zero em receivables (CHECK receivables_amount_cents_check)", async () => {

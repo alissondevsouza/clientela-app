@@ -21,7 +21,10 @@ import {
   OrderNotFoundError,
   OrderStateError,
 } from "../modules/orders/orders.errors";
-import { ProductNotFoundError } from "../modules/products/products.errors";
+import {
+  ProductNotFoundError,
+  ProductReservedError,
+} from "../modules/products/products.errors";
 import {
   InsufficientStockError,
   InvalidSaleClientError,
@@ -46,6 +49,7 @@ const ERROR_CODE = {
   unauthorized: "UNAUTHORIZED",
   clientNotFound: "CLIENT_NOT_FOUND",
   productNotFound: "PRODUCT_NOT_FOUND",
+  productReserved: "PRODUCT_RESERVED",
   leadNotFound: "LEAD_NOT_FOUND",
   leadAlreadyConverted: "LEAD_ALREADY_CONVERTED",
   saleNotFound: "SALE_NOT_FOUND",
@@ -139,6 +143,10 @@ export const errorHandler = new Elysia({ name: "error-handler" }).onError(
     if (error instanceof ProductNotFoundError) {
       set.status = HTTP_NOT_FOUND;
       return buildError(ERROR_CODE.productNotFound, error.message);
+    }
+    if (error instanceof ProductReservedError) {
+      set.status = HTTP_CONFLICT;
+      return buildError(ERROR_CODE.productReserved, error.message);
     }
 
     // Erros de domínio do funil de leads (core.md/api.md): lançados no service

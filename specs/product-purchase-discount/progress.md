@@ -1,7 +1,7 @@
 ---
 feature: product-purchase-discount
 module: shared, api, web
-phase: handoff
+phase: close
 status: completed
 updated: 2026-09-09
 ---
@@ -9,8 +9,8 @@ updated: 2026-09-09
 # Progress: product-purchase-discount
 
 **Status:** completed
-**Current Phase:** handoff
-**Current Task:** — (aguardando revisão e commit do humano)
+**Current Phase:** close
+**Current Task:** —
 
 ## Decisions Log
 
@@ -51,3 +51,4 @@ updated: 2026-09-09
 | 2026-09-09 | 2 | qa | Segundo verifier neutro aprovou sem achados | 1226 testes raiz, 273 focados, lint/typecheck/build/harness e migração verdes |
 | 2026-09-09 | 2 | graduate→handoff | ADR-0022 e modelo de domínio atualizados; CRM-11 movido para `[R]` | Entrega pronta para revisão e commit humano; nenhuma operação Git de escrita executada |
 | 2026-09-09 | 2 | handoff | Gates obrigatórios repetidos na raiz após a graduação | Lint, typecheck e 1226/1226 testes verdes |
+| 2026-09-09 | 3 | close | Commit humano `9ce488f` confirmado; CRM-11 marcado como `[x]` no roadmap | Fechamento registrado durante o intake da CRM-12 |

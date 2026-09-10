@@ -11,6 +11,8 @@ const FIXED_SUMMARY_DATA: DashboardSummaryData = {
   monthSalesCents: 15_000,
   monthProfitCents: 4_200,
   monthSalesCount: 3,
+  openSalesCents: 7_500,
+  openSalesCount: 2,
   pendingReceivablesCents: 9_000,
   overdueReceivablesCents: 2_000,
   overdueReceivablesCount: 1,

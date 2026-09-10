@@ -1,11 +1,16 @@
 "use client";
 
 import {
+  CARD_TYPE_LABELS,
+  type CreatePaymentMethod,
   type CreateSaleInput,
+  createPaymentMethodValues,
   createSaleSchema,
+  DELIVERY_STATUS_LABELS,
+  type DeliveryStatus,
+  PAYMENT_CONDITION_LABELS,
   PAYMENT_METHOD_LABELS,
-  type PaymentMethod,
-  paymentMethodValues,
+  type PaymentCondition,
 } from "@clientela/shared";
 import { X } from "lucide-react";
 import { useCallback, useEffect, useState, useTransition } from "react";
@@ -46,7 +51,6 @@ import { cn } from "@/lib/utils";
 
 const DEBOUNCE_MS = 300;
 const MIN_SEARCH_LEN = 2;
-const CREDIT_METHOD: PaymentMethod = "credit";
 const INSTALLMENTS_MIN = 1;
 const INSTALLMENTS_MAX = 24;
 
@@ -71,6 +75,11 @@ const TOTAL_LABEL = "Total";
 const TOTAL_HINT = "Valor confirmado no servidor";
 
 const PAYMENT_SECTION_LABEL = "Forma de pagamento";
+const DELIVERY_SECTION_LABEL = "Entrega";
+const PAYMENT_CONDITION_LABEL = "Quando você vai receber?";
+const CARD_TYPE_LABEL = "Tipo do cartão";
+const DELIVERY_PENDING_HINT =
+  "A venda ficará em aberto até a entrega e o recebimento.";
 const INSTALLMENTS_LABEL = "Número de parcelas";
 const FIRST_DUE_DATE_LABEL = "Primeiro vencimento";
 
@@ -105,7 +114,10 @@ type SaleFormValues = {
   clientId: string | null;
   clientName: string;
   items: ItemFieldValues[];
-  paymentMethod: PaymentMethod;
+  paymentMethod: CreatePaymentMethod;
+  deliveryStatus: DeliveryStatus;
+  paymentCondition: PaymentCondition;
+  cardType: "debit" | "credit";
   installments: string;
   firstDueDate: string;
 };
@@ -123,6 +135,9 @@ const EMPTY_VALUES: SaleFormValues = {
   clientName: "",
   items: [EMPTY_ITEM],
   paymentMethod: "cash",
+  deliveryStatus: "pending",
+  paymentCondition: "on_delivery",
+  cardType: "credit",
   installments: "1",
   firstDueDate: "",
 };
@@ -559,20 +574,22 @@ const buildPayload = (values: SaleFormValues): CreateSaleInput => {
     clientId: values.clientId ?? undefined,
     items,
     paymentMethod: values.paymentMethod,
-  };
-
-  if (values.paymentMethod !== CREDIT_METHOD) {
-    return base;
-  }
-
-  const installments = Number(values.installments.trim());
-  return {
-    ...base,
+    deliveryStatus: values.deliveryStatus,
+    paymentCondition: values.paymentCondition,
     installments:
-      values.installments.trim().length === 0 ? Number.NaN : installments,
-    firstDueDate:
-      values.firstDueDate.length === 0 ? undefined : values.firstDueDate,
+      values.paymentCondition === "installments"
+        ? values.installments.trim().length === 0
+          ? Number.NaN
+          : Number(values.installments.trim())
+        : 1,
+    ...(values.paymentMethod === "card" ? { cardType: values.cardType } : {}),
+    ...(values.paymentCondition === "installments" &&
+    values.firstDueDate.length > 0
+      ? { firstDueDate: values.firstDueDate }
+      : {}),
   };
+
+  return base;
 };
 
 // ---------------------------------------------------------------------------
@@ -604,6 +621,8 @@ export function SaleForm() {
   const clientId = useWatch({ control, name: "clientId" });
   const clientName = useWatch({ control, name: "clientName" });
   const paymentMethod = useWatch({ control, name: "paymentMethod" });
+  const deliveryStatus = useWatch({ control, name: "deliveryStatus" });
+  const paymentCondition = useWatch({ control, name: "paymentCondition" });
   const installmentsRaw = useWatch({ control, name: "installments" });
   const watchedItems = useWatch({ control, name: "items" });
 
@@ -614,9 +633,9 @@ export function SaleForm() {
     })),
   );
 
-  const isCredit = paymentMethod === CREDIT_METHOD;
+  const isInstallments = paymentCondition === "installments";
   const installmentCount = Number((installmentsRaw ?? "").trim());
-  const installmentPreview = isCredit
+  const installmentPreview = isInstallments
     ? installmentAmountPreviewCents(currentTotal, installmentCount)
     : null;
 
@@ -737,7 +756,7 @@ export function SaleForm() {
           className="flex flex-col gap-2"
           aria-label={PAYMENT_SECTION_LABEL}
         >
-          {paymentMethodValues.map((method) => (
+          {createPaymentMethodValues.map((method) => (
             <label
               key={method}
               className={cn(
@@ -759,7 +778,98 @@ export function SaleForm() {
         </fieldset>
       </section>
 
-      {isCredit ? (
+      <section className="flex flex-col gap-2">
+        <h2 className="font-heading text-lg font-semibold">
+          {DELIVERY_SECTION_LABEL}
+        </h2>
+        <fieldset
+          className="flex flex-col gap-2"
+          aria-label={DELIVERY_SECTION_LABEL}
+        >
+          {(["pending", "delivered"] as const).map((status) => (
+            <label
+              key={status}
+              className={cn(
+                "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 ring-1 ring-foreground/10",
+                deliveryStatus === status && "ring-2 ring-primary",
+              )}
+            >
+              <input
+                type="radio"
+                value={status}
+                className="size-4"
+                {...register("deliveryStatus")}
+              />
+              <span className="text-sm font-medium">
+                {DELIVERY_STATUS_LABELS[status]}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        {deliveryStatus === "pending" ? (
+          <p className="text-sm text-muted-foreground">
+            {DELIVERY_PENDING_HINT}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h2 className="font-heading text-lg font-semibold">
+          {PAYMENT_CONDITION_LABEL}
+        </h2>
+        <fieldset
+          className="flex flex-col gap-2"
+          aria-label={PAYMENT_CONDITION_LABEL}
+        >
+          {(["received", "on_delivery", "installments"] as const).map(
+            (condition) => (
+              <label
+                key={condition}
+                className={cn(
+                  "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 ring-1 ring-foreground/10",
+                  paymentCondition === condition && "ring-2 ring-primary",
+                )}
+              >
+                <input
+                  type="radio"
+                  value={condition}
+                  className="size-4"
+                  {...register("paymentCondition")}
+                />
+                <span className="text-sm font-medium">
+                  {PAYMENT_CONDITION_LABELS[condition]}
+                </span>
+              </label>
+            ),
+          )}
+        </fieldset>
+      </section>
+
+      {paymentMethod === "card" ? (
+        <section className="flex flex-col gap-2">
+          <Label>{CARD_TYPE_LABEL}</Label>
+          <fieldset className="flex gap-2" aria-label={CARD_TYPE_LABEL}>
+            {(["debit", "credit"] as const).map((type) => (
+              <label
+                key={type}
+                className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 ring-1 ring-foreground/10"
+              >
+                <input
+                  type="radio"
+                  value={type}
+                  className="size-4"
+                  {...register("cardType")}
+                />
+                <span className="text-sm font-medium">
+                  {CARD_TYPE_LABELS[type]}
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        </section>
+      ) : null}
+
+      {isInstallments ? (
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="sale-installments">{INSTALLMENTS_LABEL}</Label>

@@ -9,7 +9,12 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { listClients } from "@/lib/clients-api";
 import { loadWebEnv } from "@/lib/env";
 import { listProducts } from "@/lib/products-api";
-import { cancelSale, createSale, setReceivablePaid } from "@/lib/sales-api";
+import {
+  cancelSale,
+  createSale,
+  deliverSale,
+  setReceivablePaid,
+} from "@/lib/sales-api";
 
 const LIST_PATH = "/crm/sales";
 const PRODUCTS_PATH = "/crm/products";
@@ -115,6 +120,25 @@ export const cancelSaleAction = async (
     return { ok: false, message: result.message };
   }
 
+  revalidatePath(LIST_PATH);
+  revalidatePath(PRODUCTS_PATH);
+  revalidatePath(RECEIVABLES_PATH);
+  revalidatePath(saleDetailPath(parsed.data));
+  return { ok: true };
+};
+
+export const deliverSaleAction = async (
+  id: string,
+): Promise<SalesActionResult> => {
+  const parsed = saleIdSchema.safeParse(id);
+  if (!parsed.success) return { ok: false, message: INVALID_INPUT_MESSAGE };
+  const token = await requireToken();
+  const result = await deliverSale(parsed.data, {
+    fetchImpl: fetch,
+    apiUrl: loadWebEnv().API_URL,
+    token,
+  });
+  if (!result.ok) return { ok: false, message: result.message };
   revalidatePath(LIST_PATH);
   revalidatePath(PRODUCTS_PATH);
   revalidatePath(RECEIVABLES_PATH);

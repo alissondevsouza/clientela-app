@@ -34,7 +34,7 @@ const toSafeInteger = (value: string | number, field: string): number => {
 // intervalo (em vez de `date_trunc` na coluna) evita função sobre coluna
 // indexável, embora aqui o filtro dominante seja `consultant_id`.
 const monthSalesScope = (consultantId: string): SQL =>
-  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.soldAt} >= date_trunc('month', now()) AND ${sales.soldAt} < date_trunc('month', now()) + interval '1 month'`;
+  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.completedAt} >= date_trunc('month', now()) AND ${sales.completedAt} < date_trunc('month', now()) + interval '1 month'`;
 
 // Única camada que toca o banco (api.md/database.md). Leitura agregada
 // cross-tabela (sales/sale_items/receivables/consultants) é o domínio do
@@ -54,6 +54,16 @@ export const createDashboardRepository = (
       })
       .from(sales)
       .where(monthSalesScope(consultantId));
+
+    const [openSalesRow] = await db
+      .select({
+        openSalesCents: sql<string>`COALESCE(SUM(${sales.totalCents}), 0)::bigint`,
+        openSalesCount: sql<string>`COUNT(*)`,
+      })
+      .from(sales)
+      .where(
+        sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = 'open'`,
+      );
 
     // Lucro do mês (RF-03/RF-04): soma sobre os itens das vendas do mês
     // corrente, `(unit_price_cents - cost_cents) * qty`, com cast para bigint
@@ -97,6 +107,14 @@ export const createDashboardRepository = (
       monthProfitCents: toSafeInteger(
         profitRow?.monthProfitCents ?? 0,
         "monthProfitCents",
+      ),
+      openSalesCents: toSafeInteger(
+        openSalesRow?.openSalesCents ?? 0,
+        "openSalesCents",
+      ),
+      openSalesCount: toSafeInteger(
+        openSalesRow?.openSalesCount ?? 0,
+        "openSalesCount",
       ),
       pendingReceivablesCents: toSafeInteger(
         receivablesRow?.pendingCents ?? 0,

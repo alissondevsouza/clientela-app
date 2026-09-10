@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 // reforço, nunca o único portador da informação (a11y/RF-08). Concluída em tom
 // neutro/positivo; cancelada em destaque de destrutivo para leitura imediata.
 const STATUS_CLASSES: Record<SaleStatus, string> = {
+  open: "bg-primary/10 text-primary ring-1 ring-primary/30",
   completed: "bg-secondary text-secondary-foreground ring-1 ring-border",
   canceled: "bg-destructive/10 text-destructive ring-1 ring-destructive/30",
 };

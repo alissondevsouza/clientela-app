@@ -211,8 +211,9 @@ export const updateProductSchema = z
 export type UpdateProductInput = z.input<typeof updateProductSchema>;
 export type UpdateProduct = z.output<typeof updateProductSchema>;
 
-// Contrato de resposta (API → front). `lowStock` é derivado pela API
-// (`stockQty <= lowStockThreshold`); datas em ISO.
+// Contrato de resposta (API → front). `stockQty` é físico; `reservedQty` e
+// `availableQty` são derivados pela API. A disponibilidade pode ser negativa
+// quando um ajuste físico ficar abaixo das reservas ativas (RF-05).
 export const productSchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -221,6 +222,8 @@ export const productSchema = z.object({
   purchaseDiscountBps: purchaseDiscountBpsSchema.nullable(),
   priceCents: z.number().int(),
   stockQty: z.number().int(),
+  reservedQty: z.number().int().min(0),
+  availableQty: z.number().int(),
   lowStockThreshold: z.number().int(),
   lowStock: z.boolean(),
   createdAt: z.iso.datetime(),

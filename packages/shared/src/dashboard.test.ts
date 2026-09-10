@@ -5,6 +5,8 @@ const validSummary = {
   monthSalesCents: 150_000,
   monthProfitCents: 45_000,
   monthSalesCount: 3,
+  openSalesCents: 35_000,
+  openSalesCount: 2,
   pendingReceivablesCents: 20_000,
   overdueReceivablesCents: 5_000,
   overdueReceivablesCount: 1,
@@ -43,6 +45,29 @@ describe("dashboardSummarySchema", () => {
       monthlyGoalCents: null,
     });
     expect(result.monthlyGoalCents).toBeNull();
+  });
+
+  it("aceita totais e contagem de vendas abertas independentes do realizado", () => {
+    const result = dashboardSummarySchema.parse({
+      ...validSummary,
+      openSalesCents: 42_500,
+      openSalesCount: 4,
+    });
+
+    expect(result.openSalesCents).toBe(42_500);
+    expect(result.openSalesCount).toBe(4);
+  });
+
+  it.each([
+    ["openSalesCents", -1],
+    ["openSalesCount", -1],
+  ] as const)("rejeita %s negativo", (field, value) => {
+    const result = dashboardSummarySchema.safeParse({
+      ...validSummary,
+      [field]: value,
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("rejeita monthlyGoalCents 0 (meta deve ser > 0 quando presente)", () => {

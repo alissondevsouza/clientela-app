@@ -17,6 +17,8 @@ export const dashboardSummarySchema = z.object({
   monthSalesCents: z.number().int().min(0),
   monthProfitCents: z.number().int(),
   monthSalesCount: z.number().int().min(0),
+  openSalesCents: z.number().int().min(0),
+  openSalesCount: z.number().int().min(0),
   pendingReceivablesCents: z.number().int().min(0),
   overdueReceivablesCents: z.number().int().min(0),
   overdueReceivablesCount: z.number().int().min(0),

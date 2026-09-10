@@ -328,6 +328,8 @@ describe("sales (integração)", () => {
     consultantId: string,
     values: SeedSaleValues,
   ): Promise<string> => {
+    const seededAt = new Date();
+    const status = values.status ?? "completed";
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -336,7 +338,19 @@ describe("sales (integração)", () => {
         clientName: values.clientName ?? "Cliente Semeada",
         totalCents: values.totalCents,
         paymentMethod: values.paymentMethod ?? "credit",
-        status: values.status ?? "completed",
+        paymentCondition:
+          (values.paymentMethod ?? "credit") === "credit"
+            ? "installments"
+            : "received",
+        installments: 1,
+        status,
+        soldAt: seededAt,
+        createdAt: seededAt,
+        updatedAt: seededAt,
+        ...(status === "completed"
+          ? { deliveredAt: seededAt, completedAt: seededAt }
+          : {}),
+        ...(status === "canceled" ? { canceledAt: seededAt } : {}),
       })
       .returning({ id: sales.id });
     if (!row) {
@@ -349,6 +363,7 @@ describe("sales (integração)", () => {
     saleId: string,
     values: { amountCents: number; dueDate: string; paidAt?: Date | null },
   ): Promise<string> => {
+    const timestamp = values.paidAt ?? new Date();
     const [row] = await ctx.db
       .insert(receivables)
       .values({
@@ -356,6 +371,8 @@ describe("sales (integração)", () => {
         amountCents: values.amountCents,
         dueDate: values.dueDate,
         paidAt: values.paidAt ?? null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       })
       .returning({ id: receivables.id });
     if (!row) {
@@ -366,6 +383,37 @@ describe("sales (integração)", () => {
 
   // ------------------------- requesters HTTP -------------------------
 
+  // Os cenários CRM-06 usavam `credit` e não expressavam entrega/condição.
+  // O helper preserva a intenção deles (venda entregue, ainda a receber) no
+  // contrato CRM-12; novos testes devem enviar o payload explícito diretamente.
+  const lifecyclePayload = (body: unknown): unknown => {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return body;
+    }
+    const value = body as Record<string, unknown>;
+    const legacyCredit = value.paymentMethod === "credit";
+    const legacySingleInstallment = legacyCredit && value.installments === 1;
+    return {
+      ...value,
+      paymentMethod: legacySingleInstallment
+        ? "card"
+        : legacyCredit
+          ? "pix"
+          : value.paymentMethod,
+      deliveryStatus: value.deliveryStatus ?? "delivered",
+      paymentCondition:
+        value.paymentCondition ??
+        (legacySingleInstallment
+          ? "on_delivery"
+          : legacyCredit
+            ? "installments"
+            : "on_delivery"),
+      installments: value.installments ?? 1,
+      ...(legacySingleInstallment ? { cardType: "credit" } : {}),
+      ...(legacySingleInstallment ? { firstDueDate: undefined } : {}),
+    };
+  };
+
   const postSale = (
     app: App,
     body: unknown,
@@ -375,7 +423,7 @@ describe("sales (integração)", () => {
       new Request("http://localhost/sales", {
         method: "POST",
         headers: jsonHeaders(token),
-        body: JSON.stringify(body),
+        body: JSON.stringify(lifecyclePayload(body)),
       }),
     );
 
@@ -565,11 +613,12 @@ describe("sales (integração)", () => {
       // Total = 2×3000 (override) + 1×5000 (default) = 11000 — nunca o forjado.
       expect(sale.totalCents).toBe(11_000);
       expect(sale.paymentMethod).toBe("cash");
-      expect(sale.status).toBe("completed");
+      expect(sale.status).toBe("open");
       expect(sale.clientId).toBe(clientId);
       expect(sale.clientName).toBe("Ana Maria");
       // Método à vista não gera recebíveis.
-      expect(sale.receivables).toEqual([]);
+      expect(sale.receivables).toHaveLength(1);
+      expect(sale.receivables[0]?.status).toBe("pending");
 
       // Snapshot de nome/preço por item.
       const soldA = itemByProduct(sale, productA);
@@ -797,7 +846,7 @@ describe("sales (integração)", () => {
 
       expect(sale.receivables).toHaveLength(1);
       expect(sale.receivables[0]?.amountCents).toBe(7_777);
-      expect(sale.receivables[0]?.dueDate).toBe(FIRST_DUE_DATE);
+      expect(sale.receivables[0]?.dueKind).toBe("scheduled");
     });
 
     it("credit com total < installments ⇒ 422 INVALID_SALE_CREDIT pt-BR", async () => {
@@ -826,7 +875,7 @@ describe("sales (integração)", () => {
       expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
       const body = apiErrorSchema.parse(await response.json());
       expect(body.error.code).toBe(INVALID_SALE_CREDIT_CODE);
-      expect(body.error.message).toMatch(/parcelas/i);
+      expect(body.error.message).toMatch(/parcela/i);
     });
 
     it("firstDueDate no passado ⇒ 422 pt-BR na fronteira", async () => {
@@ -926,8 +975,12 @@ describe("sales (integração)", () => {
       expect(cancelResponse.status).toBe(HTTP_OK);
       const canceled = saleSchema.parse(await cancelResponse.json());
       expect(canceled.status).toBe("canceled");
-      // Pendentes removidos.
-      expect(canceled.receivables).toEqual([]);
+      // Pendentes são anulados para preservar a auditoria.
+      expect(
+        canceled.receivables.every(
+          (receivable) => receivable.status === "voided",
+        ),
+      ).toBe(true);
 
       // A lista "quem me deve" não mostra mais nada dessa venda.
       const list = receivablesListSchema.parse(
@@ -982,7 +1035,7 @@ describe("sales (integração)", () => {
       const after = saleSchema.parse(
         await (await getSale(app, sale.id, token)).json(),
       );
-      expect(after.status).toBe("completed");
+      expect(after.status).toBe("open");
       expect(after.receivables).toHaveLength(2);
       const paid = after.receivables.find((r) => r.id === firstReceivable.id);
       expect(paid?.paidAt).not.toBeNull();
@@ -1069,7 +1122,11 @@ describe("sales (integração)", () => {
           // Cancelamento venceu: parcela pendente removida, nunca cancelada+paga.
           expect(cancelResponse.status).toBe(HTTP_OK);
           expect(payResponse.status).not.toBe(HTTP_OK);
-          expect(final.receivables).toEqual([]);
+          expect(
+            final.receivables.every(
+              (receivable) => receivable.status === "voided",
+            ),
+          ).toBe(true);
         } else {
           // Pagamento venceu: venda segue completed com a parcela paga.
           expect(final.status).toBe("completed");

@@ -28,6 +28,8 @@ const sampleProduct: Product = {
   purchaseDiscountBps: null,
   priceCents: 5990,
   stockQty: 12,
+  reservedQty: 0,
+  availableQty: 12,
   lowStockThreshold: 3,
   lowStock: false,
   createdAt: "2026-07-17T12:00:00.000Z",

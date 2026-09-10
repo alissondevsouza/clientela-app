@@ -52,6 +52,8 @@ const createFakeRepository = (seed: StoredProduct[]) => {
         purchaseDiscountBps: input.purchaseDiscountBps,
         priceCents: input.priceCents,
         stockQty,
+        reservedQty: 0,
+        availableQty: stockQty,
         lowStockThreshold,
         lowStock: stockQty <= lowStockThreshold,
         createdAt: FIXED_ISO,
@@ -77,7 +79,8 @@ const createFakeRepository = (seed: StoredProduct[]) => {
       // Só aplica as chaves PRESENTES no patch (ausente = não alterar; `null`
       // explícito em campos nullable = limpar). Recalcula `lowStock` derivado.
       Object.assign(target, resolvedPatch, { updatedAt: FIXED_ISO });
-      target.lowStock = target.stockQty <= target.lowStockThreshold;
+      target.availableQty = target.stockQty - target.reservedQty;
+      target.lowStock = target.availableQty <= target.lowStockThreshold;
       return toProduct(target);
     },
     delete: async (consultantId, id) => {
@@ -94,7 +97,7 @@ const createFakeRepository = (seed: StoredProduct[]) => {
       const scoped = store
         .filter((p) => p.consultantId === consultantId)
         .filter((p) => (search ? matchesSearch(p, search) : true))
-        .filter((p) => (lowStock ? p.stockQty <= p.lowStockThreshold : true))
+        .filter((p) => (lowStock ? p.lowStock : true))
         .toSorted((a, b) => a.name.localeCompare(b.name));
 
       const offset = (page - 1) * perPage;
@@ -107,8 +110,7 @@ const createFakeRepository = (seed: StoredProduct[]) => {
         (acc, p) => ({
           stockCostCents: acc.stockCostCents + p.costCents * p.stockQty,
           stockPriceCents: acc.stockPriceCents + p.priceCents * p.stockQty,
-          lowStockCount:
-            acc.lowStockCount + (p.stockQty <= p.lowStockThreshold ? 1 : 0),
+          lowStockCount: acc.lowStockCount + (p.lowStock ? 1 : 0),
         }),
         { stockCostCents: 0, stockPriceCents: 0, lowStockCount: 0 },
       );
@@ -125,6 +127,7 @@ const buildService = (seed: StoredProduct[] = []) => {
 
 const storedProduct = (overrides: Partial<StoredProduct>): StoredProduct => {
   const stockQty = overrides.stockQty ?? 10;
+  const reservedQty = overrides.reservedQty ?? 0;
   const lowStockThreshold = overrides.lowStockThreshold ?? 1;
   return {
     id: "11111111-1111-7111-8111-111111111111",
@@ -135,8 +138,11 @@ const storedProduct = (overrides: Partial<StoredProduct>): StoredProduct => {
     purchaseDiscountBps: null,
     priceCents: 5990,
     stockQty,
+    reservedQty,
+    availableQty: overrides.availableQty ?? stockQty - reservedQty,
     lowStockThreshold,
-    lowStock: stockQty <= lowStockThreshold,
+    lowStock:
+      (overrides.availableQty ?? stockQty - reservedQty) <= lowStockThreshold,
     createdAt: FIXED_ISO,
     updatedAt: FIXED_ISO,
     ...overrides,

@@ -6,6 +6,8 @@ import { formatBRL } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const SALES_TITLE = "Vendas do mês";
+const OPEN_SALES_TITLE = "Previsto para receber";
+const OPEN_SALES_HINT = "Vendas em aberto, ainda não concluídas.";
 const PROFIT_TITLE = "Lucro estimado";
 const PROFIT_NOTE =
   "Estimado a partir do custo registrado em cada venda no momento da compra.";
@@ -67,6 +69,21 @@ export function SummaryCards({
           <p className="text-sm text-muted-foreground">
             {salesCountText(summary.monthSalesCount)} em {summary.monthLabel}
           </p>
+        </CardContent>
+      </Card>
+
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle>{OPEN_SALES_TITLE}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-1">
+          <p className="font-heading text-xl font-semibold">
+            {formatBRL(summary.openSalesCents)}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {salesCountText(summary.openSalesCount)} em aberto
+          </p>
+          <p className="text-xs text-muted-foreground">{OPEN_SALES_HINT}</p>
         </CardContent>
       </Card>
 

@@ -14,7 +14,7 @@ import {
   startPgContainer,
 } from "../../../test/helpers/pg-container";
 import { createApp } from "../../app";
-import { consultants, products } from "../../db/schema";
+import { consultants, products, saleItems, sales } from "../../db/schema";
 import { UNAUTHORIZED_MESSAGE } from "../../plugins/auth-guard";
 import {
   createRateLimiter,
@@ -309,6 +309,46 @@ describe("products (integração)", () => {
     await ctx.db
       .insert(products)
       .values(values.map((value) => ({ consultantId, ...value })));
+  };
+
+  const seedSaleItem = async (input: {
+    consultantId: string;
+    productId: string;
+    qty: number;
+    status?: "open" | "completed";
+    delivered?: boolean;
+  }): Promise<void> => {
+    const now = new Date("2026-09-10T12:00:00.000Z");
+    const deliveredAt = input.delivered ? now : null;
+    const completedAt = input.status === "completed" ? now : null;
+    const [sale] = await ctx.db
+      .insert(sales)
+      .values({
+        consultantId: input.consultantId,
+        clientName: "Cliente da reserva",
+        totalCents: 0,
+        paymentMethod: "cash",
+        status: input.status ?? "open",
+        soldAt: now,
+        deliveredAt,
+        completedAt,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: sales.id });
+
+    if (!sale) {
+      throw new Error("falha ao semear venda de teste");
+    }
+
+    await ctx.db.insert(saleItems).values({
+      saleId: sale.id,
+      productId: input.productId,
+      productName: "Produto reservado",
+      qty: input.qty,
+      unitPriceCents: 100,
+      costCents: 50,
+    });
   };
 
   const getProducts = (
@@ -1177,6 +1217,113 @@ describe("products (integração)", () => {
       const body = apiErrorSchema.parse(await response.json());
       expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
       expect(body.error.message).toMatch(/máximo/i);
+    });
+  });
+
+  describe("reserva e disponibilidade (CRM-12 RF-05/RF-13)", () => {
+    it("deriva reserva nas projeções, usa disponibilidade no estoque baixo e preserva capital físico", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const { consultantId: otherConsultantId } = await seedConsultantSession(
+        app,
+        CONSULTANT_B,
+      );
+      const [reservedProduct] = await ctx.db
+        .insert(products)
+        .values({
+          consultantId,
+          name: "Produto reservado",
+          costCents: 100,
+          priceCents: 200,
+          stockQty: 3,
+          lowStockThreshold: 1,
+        })
+        .returning({ id: products.id });
+      const [physicalProduct] = await ctx.db
+        .insert(products)
+        .values({
+          consultantId,
+          name: "Produto físico",
+          costCents: 500,
+          priceCents: 900,
+          stockQty: 10,
+          lowStockThreshold: 5,
+        })
+        .returning({ id: products.id });
+
+      if (!reservedProduct || !physicalProduct) {
+        throw new Error("falha ao semear produtos de reserva");
+      }
+
+      await seedSaleItem({
+        consultantId,
+        productId: reservedProduct.id,
+        qty: 5,
+      });
+      await seedSaleItem({
+        consultantId,
+        productId: physicalProduct.id,
+        qty: 4,
+      });
+      await seedSaleItem({
+        consultantId,
+        productId: physicalProduct.id,
+        qty: 2,
+        delivered: true,
+      });
+      await seedSaleItem({
+        consultantId,
+        productId: physicalProduct.id,
+        qty: 3,
+        status: "completed",
+        delivered: true,
+      });
+      // Mesmo product_id em uma venda de outro tenant não pode compor reserva.
+      await seedSaleItem({
+        consultantId: otherConsultantId,
+        productId: physicalProduct.id,
+        qty: 7,
+      });
+
+      const detail = productSchema.parse(
+        await (await getProduct(app, reservedProduct.id, token)).json(),
+      );
+      expect(detail).toMatchObject({
+        stockQty: 3,
+        reservedQty: 5,
+        availableQty: -2,
+        lowStock: true,
+      });
+
+      const list = productListSchema.parse(
+        await (await getProducts(app, token)).json(),
+      );
+      expect(list.data[0]).toMatchObject({
+        id: physicalProduct.id,
+        stockQty: 10,
+        reservedQty: 4,
+        availableQty: 6,
+        lowStock: false,
+      });
+
+      const lowStockList = productListSchema.parse(
+        await (await getProducts(app, token, "?lowStock=true")).json(),
+      );
+      expect(lowStockList.data.map((product) => product.id)).toEqual([
+        reservedProduct.id,
+      ]);
+
+      const summary = productsSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(summary).toEqual({
+        stockCostCents: 5300,
+        stockPriceCents: 9600,
+        lowStockCount: 1,
+      });
     });
   });
 

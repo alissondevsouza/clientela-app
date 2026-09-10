@@ -9,13 +9,15 @@ import {
   count,
   eq,
   ilike,
+  isNull,
   lte,
   or,
   type SQL,
   sql,
 } from "drizzle-orm";
 import type { Database } from "../../db/client";
-import { products } from "../../db/schema";
+import { products, saleItems, sales } from "../../db/schema";
+import { ProductReservedError } from "./products.errors";
 import type {
   InsertProduct,
   ListProductsParams,
@@ -26,6 +28,35 @@ import type {
 export type ProductsRepository = ReturnType<typeof createProductsRepository>;
 
 type ProductRow = typeof products.$inferSelect;
+
+// Reserva é derivada, nunca persistida: considera só itens ainda vinculados a
+// vendas abertas e não entregues da mesma consultora.
+const reservedQtyExpression = sql<string>`COALESCE((
+  SELECT SUM("sale_items"."qty"::bigint)
+  FROM "sale_items"
+  INNER JOIN "sales" ON "sales"."id" = "sale_items"."sale_id"
+  WHERE "sale_items"."product_id" = "products"."id"
+    AND "sales"."consultant_id" = "products"."consultant_id"
+    AND "sales"."status" = 'open'
+    AND "sales"."delivered_at" IS NULL
+), 0)`;
+
+const availableQtyExpression = sql<number>`${products.stockQty} - ${reservedQtyExpression}`;
+
+const productProjection = {
+  id: products.id,
+  consultantId: products.consultantId,
+  name: products.name,
+  brandCode: products.brandCode,
+  costCents: products.costCents,
+  purchaseDiscountBps: products.purchaseDiscountBps,
+  priceCents: products.priceCents,
+  stockQty: products.stockQty,
+  lowStockThreshold: products.lowStockThreshold,
+  createdAt: products.createdAt,
+  updatedAt: products.updatedAt,
+  reservedQty: reservedQtyExpression,
+};
 
 // Escapa os curingas de LIKE/ILIKE (`\`, `%`, `_`) para que a busca trate o
 // termo como literal — não repetir o BUG-001 (um `%` na busca traria tudo).
@@ -56,22 +87,28 @@ export const toSafeInteger = (
   return parsed;
 };
 
-// Molda a linha do banco no contrato de resposta (Product): timestamps `Date` →
-// ISO 8601; `lowStock` derivado (fonte única da regra `stockQty <=
-// lowStockThreshold`). `consultantId` fica de fora — não é contrato público.
-const toProduct = (row: ProductRow): Product => ({
-  id: row.id,
-  name: row.name,
-  brandCode: row.brandCode,
-  costCents: row.costCents,
-  purchaseDiscountBps: row.purchaseDiscountBps,
-  priceCents: row.priceCents,
-  stockQty: row.stockQty,
-  lowStockThreshold: row.lowStockThreshold,
-  lowStock: row.stockQty <= row.lowStockThreshold,
-  createdAt: row.createdAt.toISOString(),
-  updatedAt: row.updatedAt.toISOString(),
-});
+// Molda a linha do banco no contrato de resposta (Product). Estoque baixo é
+// derivado da disponibilidade; `consultantId` fica de fora do contrato público.
+const toProduct = (row: ProductRow, reservedQty: string | number): Product => {
+  const normalizedReservedQty = toSafeInteger(reservedQty, "reservedQty");
+  const availableQty = row.stockQty - normalizedReservedQty;
+
+  return {
+    id: row.id,
+    name: row.name,
+    brandCode: row.brandCode,
+    costCents: row.costCents,
+    purchaseDiscountBps: row.purchaseDiscountBps,
+    priceCents: row.priceCents,
+    stockQty: row.stockQty,
+    reservedQty: normalizedReservedQty,
+    availableQty,
+    lowStockThreshold: row.lowStockThreshold,
+    lowStock: availableQty <= row.lowStockThreshold,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+};
 
 // Condição de busca: `ILIKE %termo%` em name OU brand_code (case-insensitive),
 // com o termo escapado (curingas tratados como literais).
@@ -82,7 +119,7 @@ const buildSearchCondition = (search: string): SQL | undefined => {
 
 // Filtro de estoque baixo: mesma comparação que gera `lowStock` no mapper.
 const lowStockCondition = (): SQL =>
-  lte(products.stockQty, products.lowStockThreshold);
+  lte(availableQtyExpression, products.lowStockThreshold);
 
 // Única camada que toca o banco (api.md/database.md). TODA query filtra por
 // `consultant_id` (escopo por consultora — RF-03); os retornos são moldados na
@@ -97,7 +134,7 @@ export const createProductsRepository = (
       throw new Error("Falha ao persistir produto: insert não retornou linha");
     }
 
-    return toProduct(row);
+    return toProduct(row, 0);
   };
 
   const findById = async (
@@ -105,12 +142,12 @@ export const createProductsRepository = (
     id: string,
   ): Promise<Product | undefined> => {
     const [row] = await db
-      .select()
+      .select(productProjection)
       .from(products)
       .where(and(eq(products.consultantId, consultantId), eq(products.id, id)))
       .limit(1);
 
-    return row ? toProduct(row) : undefined;
+    return row ? toProduct(row, row.reservedQty) : undefined;
   };
 
   const update = async (
@@ -121,7 +158,7 @@ export const createProductsRepository = (
   ): Promise<Product | undefined> => {
     return db.transaction(async (tx) => {
       const [currentRow] = await tx
-        .select()
+        .select(productProjection)
         .from(products)
         .where(
           and(eq(products.consultantId, consultantId), eq(products.id, id)),
@@ -133,7 +170,10 @@ export const createProductsRepository = (
         return undefined;
       }
 
-      const resolvedPatch = resolve(toProduct(currentRow), patch);
+      const resolvedPatch = resolve(
+        toProduct(currentRow, currentRow.reservedQty),
+        patch,
+      );
       const [updatedRow] = await tx
         .update(products)
         .set(resolvedPatch)
@@ -148,17 +188,40 @@ export const createProductsRepository = (
         );
       }
 
-      return toProduct(updatedRow);
+      return toProduct(updatedRow, currentRow.reservedQty);
     });
   };
 
   const remove = async (consultantId: string, id: string): Promise<boolean> => {
-    const deleted = await db
-      .delete(products)
-      .where(and(eq(products.consultantId, consultantId), eq(products.id, id)))
-      .returning({ id: products.id });
-
-    return deleted.length > 0;
+    return db.transaction(async (tx) => {
+      const [product] = await tx
+        .select({ id: products.id })
+        .from(products)
+        .where(
+          and(eq(products.consultantId, consultantId), eq(products.id, id)),
+        )
+        .for("update");
+      if (!product) return false;
+      const [reservation] = await tx
+        .select({ id: saleItems.id })
+        .from(saleItems)
+        .innerJoin(sales, eq(saleItems.saleId, sales.id))
+        .where(
+          and(
+            eq(saleItems.productId, id),
+            eq(sales.consultantId, consultantId),
+            eq(sales.status, "open"),
+            isNull(sales.deliveredAt),
+          ),
+        )
+        .limit(1);
+      if (reservation) throw new ProductReservedError();
+      const deleted = await tx
+        .delete(products)
+        .where(eq(products.id, id))
+        .returning({ id: products.id });
+      return deleted.length > 0;
+    });
   };
 
   const list = async (
@@ -177,7 +240,7 @@ export const createProductsRepository = (
     const offset = (page - 1) * perPage;
 
     const rows = await db
-      .select()
+      .select(productProjection)
       .from(products)
       .where(where)
       // Ordenação estável: name asc com o id como desempate determinístico.
@@ -191,7 +254,7 @@ export const createProductsRepository = (
       .where(where);
 
     return {
-      rows: rows.map(toProduct),
+      rows: rows.map((row) => toProduct(row, row.reservedQty)),
       total: totalRow?.value ?? 0,
     };
   };
@@ -205,7 +268,7 @@ export const createProductsRepository = (
       .select({
         stockCostCents: sql<string>`COALESCE(SUM(${products.costCents}::bigint * ${products.stockQty}), 0)`,
         stockPriceCents: sql<string>`COALESCE(SUM(${products.priceCents}::bigint * ${products.stockQty}), 0)`,
-        lowStockCount: sql<string>`COUNT(*) FILTER (WHERE ${products.stockQty} <= ${products.lowStockThreshold})`,
+        lowStockCount: sql<string>`COUNT(*) FILTER (WHERE ${availableQtyExpression} <= ${products.lowStockThreshold})`,
       })
       .from(products)
       .where(eq(products.consultantId, consultantId));

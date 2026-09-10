@@ -14,6 +14,8 @@ const sampleSummary: DashboardSummary = {
   monthSalesCents: 250000,
   monthProfitCents: 90000,
   monthSalesCount: 5,
+  openSalesCents: 0,
+  openSalesCount: 0,
   pendingReceivablesCents: 30000,
   overdueReceivablesCents: 5000,
   overdueReceivablesCount: 1,

@@ -84,7 +84,8 @@
 - [ ] **CRM-08** — Catálogo da landing alimentado pelos produtos do CRM (flag "destaque") — _dep: CRM-05_
 - [x] **CRM-09** → `specs/crm-orders` — Pedidos de reposição: controle do que a consultora precisa pedir à Mary Kay, com ciclo de status (rascunho → pedido → entregue / cancelado), itens vinculados a produtos, sugestão a partir do estoque baixo e entrada atômica de estoque na entrega — _dep: CRM-05_ — handoff 2026-07-20 (ADR-0015; QA APROVADO rodada 1, 784 testes)
 - [x] **CRM-10** → `specs/order-item-client-link` — Encomendas de clientes no pedido: vínculo opcional de cliente por item (join derivado, sem snapshot — ADR-0016), cadastro rápido de cliente no form (nome + WhatsApp) e visão "para quem é" no detalhe — _dep: CRM-03, CRM-09_ — handoff 2026-07-20 (ADR-0016; QA APROVADO rodada 1, 807 testes, runtime provado)
-- [R] **CRM-11** → `specs/product-purchase-discount` — Cadastro de produto com custo por desconto da consultora (atalhos 30%/35%/40% e custo manual), cálculo autoritativo no servidor e preservação de produtos legados — _dep: CRM-05, CRM-06, CRM-07, CRM-09_ — handoff 2026-09-09 (ADR-0022; QA APROVADO rodada 2, 1226 testes)
+- [x] **CRM-11** → `specs/product-purchase-discount` — Cadastro de produto com custo por desconto da consultora (atalhos 30%/35%/40% e custo manual), cálculo autoritativo no servidor e preservação de produtos legados — _dep: CRM-05, CRM-06, CRM-07, CRM-09_ — commit humano `9ce488f` em 2026-09-09 (ADR-0022; QA APROVADO rodada 2, 1226 testes)
+- [>] **CRM-12** → `specs/sales-lifecycle-payment-plans` — Ciclo de venda em aberto até entrega e pagamento integral, reserva de estoque, planos de pagamento detalhados para dinheiro/PIX/cartão e previsão do valor a receber — _dep: CRM-06, CRM-07, CRM-09, CRM-11_
 
 ## Fase 3 — Relacionamento
 

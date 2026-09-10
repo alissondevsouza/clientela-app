@@ -1,14 +1,11 @@
-import {
-  PAYMENT_METHOD_LABELS,
-  type SaleItem,
-  saleStatusValues,
-} from "@clientela/shared";
+import { PAYMENT_METHOD_LABELS, type SaleItem } from "@clientela/shared";
 import { ArrowLeft } from "lucide-react";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { CancelSaleButton } from "@/components/sales/cancel-sale-button";
+import { DeliverSaleButton } from "@/components/sales/deliver-sale-button";
 import { SaleReceivableRow } from "@/components/sales/sale-receivable-row";
 import { SaleStatusBadge } from "@/components/sales/sale-status-badge";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
@@ -35,7 +32,7 @@ const CANCELED_NOTICE_DETAIL =
   "Esta venda foi cancelada: os itens voltaram ao estoque e as parcelas pendentes foram removidas. O histórico é mantido.";
 
 const ISO_DATE_TIME_SEPARATOR = "T";
-const SALE_COMPLETED = saleStatusValues[0];
+const SALE_CANCELED = "canceled";
 
 const clientDetailHref = (clientId: string): string =>
   `/crm/clients/${clientId}`;
@@ -86,7 +83,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
   }
 
   const { sale } = result;
-  const isCompleted = sale.status === SALE_COMPLETED;
+  const isCanceled = sale.status === SALE_CANCELED;
   const clientLabel =
     sale.clientName.length > 0 ? sale.clientName : NO_CLIENT_TEXT;
 
@@ -108,7 +105,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
         </div>
       </div>
 
-      {sale.status !== SALE_COMPLETED ? (
+      {isCanceled ? (
         <div className="flex flex-col gap-1 rounded-xl border border-destructive/40 bg-destructive/5 p-4">
           <p className="text-sm font-medium text-destructive">
             {CANCELED_NOTICE}
@@ -192,7 +189,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
                 <SaleReceivableRow
                   receivable={receivable}
                   saleId={sale.id}
-                  canManage={isCompleted}
+                  canManage={!isCanceled}
                 />
               </li>
             ))}
@@ -200,7 +197,10 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
         </section>
       ) : null}
 
-      {isCompleted ? <CancelSaleButton saleId={sale.id} /> : null}
+      {!isCanceled && sale.deliveryStatus === "pending" ? (
+        <DeliverSaleButton saleId={sale.id} />
+      ) : null}
+      {!isCanceled ? <CancelSaleButton saleId={sale.id} /> : null}
     </div>
   );
 }

@@ -253,6 +253,8 @@ describe("dashboard (integração)", () => {
     consultantId: string,
     values: SeedSaleValues,
   ): Promise<string> => {
+    const timestamp = values.soldAt ?? new Date();
+    const status = values.status ?? "completed";
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -261,8 +263,15 @@ describe("dashboard (integração)", () => {
         clientName: "Cliente Semeada",
         totalCents: values.totalCents,
         paymentMethod: "cash",
-        status: values.status ?? "completed",
-        ...(values.soldAt ? { soldAt: values.soldAt } : {}),
+        paymentCondition: "received",
+        status,
+        soldAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        ...(status === "completed"
+          ? { deliveredAt: timestamp, completedAt: timestamp }
+          : {}),
+        ...(status === "canceled" ? { canceledAt: timestamp } : {}),
       })
       .returning({ id: sales.id });
     if (!row) {
@@ -296,11 +305,14 @@ describe("dashboard (integração)", () => {
     saleId: string,
     values: { amountCents: number; dueDate: string; paidAt?: Date | null },
   ): Promise<void> => {
+    const timestamp = values.paidAt ?? new Date();
     await ctx.db.insert(receivables).values({
       saleId,
       amountCents: values.amountCents,
       dueDate: values.dueDate,
       paidAt: values.paidAt ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
     });
   };
 

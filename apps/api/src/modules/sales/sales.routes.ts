@@ -92,6 +92,12 @@ export const createSalesRoutes = ({
         );
         return service.cancel(consultantId, requireValidSaleId(params.id));
       })
+      .post("/sales/:id/deliver", async ({ request, params }) => {
+        const consultantId = await resolveConsultantId(
+          request.headers.get(AUTHORIZATION_HEADER),
+        );
+        return service.deliver(consultantId, requireValidSaleId(params.id));
+      })
       // `/receivables/summary` registrada ANTES de `/receivables/:id` (plan.md):
       // "summary" não é uuid e o `requireValidReceivableId` já mapearia para 404,
       // mas a ordem deixa a intenção explícita e evita depender só do isUuid.

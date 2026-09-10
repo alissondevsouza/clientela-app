@@ -1,4 +1,6 @@
 import type {
+  DeliveryStatus,
+  PaymentStatus,
   Receivable,
   ReceivablesSummary,
   Sale,
@@ -6,6 +8,7 @@ import type {
   SaleListItem,
   SaleStatus,
 } from "@clientela/shared";
+import { appLocalDateIso } from "@clientela/shared";
 import {
   and,
   asc,
@@ -35,12 +38,10 @@ import {
   SaleStateError,
 } from "./sales.errors";
 import type {
+  ComposedSale,
   ListReceivablesParams,
   ListSalesParams,
-  ReceivableData,
   ReceivableWithSale,
-  SaleData,
-  SaleItemData,
   SaleProductSnapshot,
   SalesRepositoryPort,
 } from "./sales.service";
@@ -55,6 +56,7 @@ type Executor = Database | Transaction;
 
 const COMPLETED_STATUS: SaleStatus = "completed";
 const CANCELED_STATUS: SaleStatus = "canceled";
+const OPEN_STATUS: SaleStatus = "open";
 
 // Snapshot do nome quando a venda não tem cliente identificada (client_id null).
 // A coluna client_name é NOT NULL; o web exibe "—" pela ausência de clientId.
@@ -85,7 +87,7 @@ const toSafeInteger = (value: string | number, field: string): number => {
 
 // `overdue` derivado no SQL com a data do servidor (CURRENT_DATE, UTC): parcela
 // vencida = due_date no passado E ainda não paga. Mesma regra no summary.
-const overdueExpression: SQL<boolean> = sql<boolean>`(${receivables.dueDate} < CURRENT_DATE) AND (${receivables.paidAt} IS NULL)`;
+const overdueExpression: SQL<boolean> = sql<boolean>`(${receivables.dueDate} < CURRENT_DATE) AND (${receivables.paidAt} IS NULL) AND (${receivables.voidedAt} IS NULL)`;
 
 // Colunas do recebível na resposta (inclui overdue derivado). Reusado por
 // getById/createSale/setReceivablePaid.
@@ -94,7 +96,11 @@ const receivableColumns = {
   saleId: receivables.saleId,
   amountCents: receivables.amountCents,
   dueDate: receivables.dueDate,
+  dueKind: receivables.dueKind,
   paidAt: receivables.paidAt,
+  voidedAt: receivables.voidedAt,
+  createdAt: receivables.createdAt,
+  updatedAt: receivables.updatedAt,
   overdue: overdueExpression,
 };
 
@@ -104,8 +110,12 @@ type ReceivableRow = {
   id: string;
   saleId: string;
   amountCents: number;
-  dueDate: string;
+  dueDate: string | null;
+  dueKind: "scheduled" | "on_delivery" | "unknown";
   paidAt: Date | null;
+  voidedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
   overdue: boolean;
 };
 
@@ -122,27 +132,76 @@ const toReceivable = (row: ReceivableRow): Receivable => ({
   saleId: row.saleId,
   amountCents: row.amountCents,
   dueDate: row.dueDate,
+  dueKind: row.dueKind,
   // Timestamp `Date` → ISO 8601; null = pendente.
   paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+  voidedAt: row.voidedAt ? row.voidedAt.toISOString() : null,
+  status: row.voidedAt ? "voided" : row.paidAt ? "paid" : "pending",
   overdue: row.overdue,
+  createdAt: row.createdAt.toISOString(),
+  updatedAt: row.updatedAt.toISOString(),
 });
 
-const toSaleListItem = (row: SaleRow): SaleListItem => ({
-  id: row.id,
-  clientId: row.clientId,
-  clientName: row.clientName,
-  totalCents: row.totalCents,
-  paymentMethod: row.paymentMethod,
-  status: row.status,
-  soldAt: row.soldAt.toISOString(),
-});
+const toSaleListItem = (row: SaleRow): SaleListItem => {
+  const deliveryStatus: DeliveryStatus = row.deliveredAt
+    ? "delivered"
+    : "pending";
+  const paymentStatus: PaymentStatus =
+    row.status === "canceled" ? "voided" : "pending";
+  return {
+    id: row.id,
+    clientId: row.clientId,
+    clientName: row.clientName,
+    totalCents: row.totalCents,
+    paymentMethod: row.paymentMethod,
+    paymentCondition: row.paymentCondition,
+    cardType: row.cardType,
+    installments: row.installments,
+    paymentPlanKnown: row.paymentPlanKnown,
+    status: row.status,
+    deliveryStatus,
+    paymentStatus,
+    paidCents: 0,
+    outstandingCents: row.status === "canceled" ? 0 : row.totalCents,
+    soldAt: row.soldAt.toISOString(),
+    deliveredAt: row.deliveredAt?.toISOString() ?? null,
+    completedAt: row.completedAt?.toISOString() ?? null,
+    canceledAt: row.canceledAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+};
 
 const toSale = (
   row: SaleRow,
   itemRows: SaleItemRow[],
   receivableRows: ReceivableRow[],
 ): Sale => ({
-  ...toSaleListItem(row),
+  ...(() => {
+    const base = toSaleListItem(row);
+    const paidCents = receivableRows.reduce(
+      (sum, receivable) =>
+        receivable.paidAt !== null && receivable.voidedAt === null
+          ? sum + receivable.amountCents
+          : sum,
+      0,
+    );
+    const outstandingCents =
+      row.status === "canceled" ? 0 : Math.max(row.totalCents - paidCents, 0);
+    return {
+      ...base,
+      paymentStatus:
+        row.status === "canceled"
+          ? "voided"
+          : outstandingCents === 0
+            ? "paid"
+            : paidCents > 0
+              ? "partial"
+              : "pending",
+      paidCents: row.status === "canceled" ? 0 : paidCents,
+      outstandingCents,
+    };
+  })(),
   items: itemRows.map(toSaleItem),
   receivables: receivableRows.map(toReceivable),
 });
@@ -212,21 +271,19 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   // venda completa. Qualquer falha lança e faz rollback (atomicidade).
   const createSale = async (
     consultantId: string,
-    sale: SaleData,
-    items: SaleItemData[],
-    receivablesData: ReceivableData[],
+    composed: ComposedSale,
   ): Promise<Sale> => {
     return db.transaction(async (tx) => {
       // (a) Snapshot do nome da cliente (escopado). clientId inválido/alheio ⇒
       // 422 antes de qualquer escrita; sem cliente ⇒ sentinel.
       let clientName = ANONYMOUS_CLIENT_NAME;
-      if (sale.clientId !== null) {
+      if (composed.sale.clientId !== null) {
         const [clientRow] = await tx
           .select({ name: clients.name })
           .from(clients)
           .where(
             and(
-              eq(clients.id, sale.clientId),
+              eq(clients.id, composed.sale.clientId),
               eq(clients.consultantId, consultantId),
             ),
           )
@@ -241,10 +298,12 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       // mesmos produtos travam na mesma ordem — sem deadlock). UPDATE
       // condicional `stock_qty >= qty`: 0 linhas ⇒ leitura do estoque atual e
       // InsufficientStockError (rollback). Nunca-negativo sob concorrência.
-      const orderedItems = [...items].toSorted((left, right) =>
+      const orderedItems = [...composed.items].toSorted((left, right) =>
         left.productId.localeCompare(right.productId),
       );
-      for (const item of orderedItems) {
+      for (const item of composed.deliveryStatus === "delivered"
+        ? orderedItems
+        : []) {
         const decremented = await tx
           .update(products)
           .set({ stockQty: sql`${products.stockQty} - ${item.qty}` })
@@ -280,10 +339,8 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         .insert(sales)
         .values({
           consultantId,
-          clientId: sale.clientId,
           clientName,
-          totalCents: sale.totalCents,
-          paymentMethod: sale.paymentMethod,
+          ...composed.sale,
         })
         .returning({ id: sales.id });
 
@@ -292,7 +349,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       }
 
       await tx.insert(saleItems).values(
-        items.map((item) => ({
+        composed.items.map((item) => ({
           saleId: saleRow.id,
           productId: item.productId,
           productName: item.productName,
@@ -302,12 +359,11 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         })),
       );
 
-      if (receivablesData.length > 0) {
+      if (composed.receivables.length > 0) {
         await tx.insert(receivables).values(
-          receivablesData.map((receivable) => ({
+          composed.receivables.map((receivable) => ({
             saleId: saleRow.id,
-            amountCents: receivable.amountCents,
-            dueDate: receivable.dueDate,
+            ...receivable,
           })),
         );
       }
@@ -368,17 +424,23 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     saleId: string,
   ): Promise<Sale> => {
     return db.transaction(async (tx) => {
+      const now = new Date();
       const canceled = await tx
         .update(sales)
-        .set({ status: CANCELED_STATUS })
+        .set({
+          status: CANCELED_STATUS,
+          canceledAt: now,
+          completedAt: null,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(sales.id, saleId),
             eq(sales.consultantId, consultantId),
-            eq(sales.status, COMPLETED_STATUS),
+            inArray(sales.status, [OPEN_STATUS, COMPLETED_STATUS]),
           ),
         )
-        .returning({ id: sales.id });
+        .returning({ id: sales.id, deliveredAt: sales.deliveredAt });
 
       if (canceled.length === 0) {
         const [existing] = await tx
@@ -406,7 +468,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         throw new SaleStateError(CANCEL_WITH_PAID_MESSAGE);
       }
 
-      // Devolve o estoque só dos itens cujo produto ainda existe (product_id não
+      // Devolve o estoque somente quando a venda havia sido entregue.
       // nulo), ORDENADO por product_id (mesma ordem da baixa — anti-deadlock).
       const itemsToRestock = await tx
         .select({ productId: saleItems.productId, qty: saleItems.qty })
@@ -416,7 +478,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         )
         .orderBy(asc(saleItems.productId));
 
-      for (const item of itemsToRestock) {
+      for (const item of canceled[0]?.deliveredAt ? itemsToRestock : []) {
         // isNotNull já filtra, mas o tipo permanece nullable — guarda explícita.
         if (item.productId === null) {
           continue;
@@ -432,10 +494,16 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
           );
       }
 
-      // Remove os recebíveis pendentes (os pagos já barraram o cancelamento).
       await tx
-        .delete(receivables)
-        .where(and(eq(receivables.saleId, saleId), isNull(receivables.paidAt)));
+        .update(receivables)
+        .set({ voidedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(receivables.saleId, saleId),
+            isNull(receivables.paidAt),
+            isNull(receivables.voidedAt),
+          ),
+        );
 
       const result = await loadSale(tx, consultantId, saleId);
       if (!result) {
@@ -444,6 +512,80 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       return result;
     });
   };
+
+  const deliver = async (consultantId: string, saleId: string): Promise<Sale> =>
+    db.transaction(async (tx) => {
+      const [saleRow] = await tx
+        .select()
+        .from(sales)
+        .where(and(eq(sales.id, saleId), eq(sales.consultantId, consultantId)))
+        .for("update");
+      if (!saleRow) throw new SaleNotFoundError();
+      if (saleRow.status === CANCELED_STATUS || saleRow.deliveredAt !== null) {
+        throw new SaleStateError("Esta venda não pode ser entregue.");
+      }
+      const items = await tx
+        .select({
+          productId: saleItems.productId,
+          qty: saleItems.qty,
+          productName: saleItems.productName,
+        })
+        .from(saleItems)
+        .where(
+          and(eq(saleItems.saleId, saleId), isNotNull(saleItems.productId)),
+        )
+        .orderBy(asc(saleItems.productId));
+      for (const item of items) {
+        if (!item.productId) continue;
+        const changed = await tx
+          .update(products)
+          .set({ stockQty: sql`${products.stockQty} - ${item.qty}` })
+          .where(
+            and(
+              eq(products.id, item.productId),
+              eq(products.consultantId, consultantId),
+              gte(products.stockQty, item.qty),
+            ),
+          )
+          .returning({ id: products.id });
+        if (changed.length === 0)
+          throw new InsufficientStockError(item.productName, 0);
+      }
+      const now = new Date();
+      const localDate = appLocalDateIso(now.toISOString());
+      const [pending] = await tx
+        .select({ id: receivables.id })
+        .from(receivables)
+        .where(
+          and(
+            eq(receivables.saleId, saleId),
+            isNull(receivables.paidAt),
+            isNull(receivables.voidedAt),
+          ),
+        )
+        .limit(1);
+      await tx
+        .update(receivables)
+        .set({ dueKind: "scheduled", dueDate: localDate, updatedAt: now })
+        .where(
+          and(
+            eq(receivables.saleId, saleId),
+            eq(receivables.dueKind, "on_delivery"),
+          ),
+        );
+      await tx
+        .update(sales)
+        .set({
+          deliveredAt: now,
+          completedAt: pending ? null : now,
+          status: pending ? OPEN_STATUS : COMPLETED_STATUS,
+          updatedAt: now,
+        })
+        .where(eq(sales.id, saleId));
+      const result = await loadSale(tx, consultantId, saleId);
+      if (!result) throw new SaleNotFoundError();
+      return result;
+    });
 
   // Lista "quem me deve" (RF-06): join com sales para escopo + dados da cliente;
   // ordenada por vencimento; overdue derivado no SQL. `pending` filtra só as não
@@ -454,7 +596,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   ): Promise<{ rows: ReceivableWithSale[]; total: number }> => {
     const conditions: SQL[] = [eq(sales.consultantId, consultantId)];
     if (pending) {
-      conditions.push(isNull(receivables.paidAt));
+      conditions.push(isNull(receivables.paidAt), isNull(receivables.voidedAt));
     }
     const where = and(...conditions);
     const offset = (page - 1) * perPage;
@@ -502,9 +644,9 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   ): Promise<ReceivablesSummary> => {
     const [row] = await db
       .select({
-        pendingCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL), 0)::bigint`,
-        overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE), 0)::bigint`,
-        overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE)`,
+        pendingCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL), 0)::bigint`,
+        overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE), 0)::bigint`,
+        overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE)`,
       })
       .from(receivables)
       .innerJoin(sales, eq(receivables.saleId, sales.id))
@@ -560,7 +702,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       }
 
       // (c) Venda cancelada ⇒ parcela não é pagável/estornável (409).
-      if (saleRow.status !== COMPLETED_STATUS) {
+      if (saleRow.status === CANCELED_STATUS) {
         throw new SaleStateError(RECEIVABLE_SALE_CANCELED_MESSAGE);
       }
 
@@ -583,10 +725,37 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       }
 
       // (e) Grava a baixa (now do banco) ou o estorno (null).
+      const now = new Date();
       await tx
         .update(receivables)
-        .set({ paidAt: paid ? sql`now()` : null })
+        .set({ paidAt: paid ? now : null, updatedAt: now })
         .where(eq(receivables.id, receivableId));
+
+      const [remaining] = await tx
+        .select({ id: receivables.id })
+        .from(receivables)
+        .where(
+          and(
+            eq(receivables.saleId, located.saleId),
+            isNull(receivables.paidAt),
+            isNull(receivables.voidedAt),
+          ),
+        )
+        .limit(1);
+      const [freshSale] = await tx
+        .select({ deliveredAt: sales.deliveredAt })
+        .from(sales)
+        .where(eq(sales.id, located.saleId))
+        .limit(1);
+      const complete = freshSale?.deliveredAt !== null && !remaining;
+      await tx
+        .update(sales)
+        .set({
+          status: complete ? COMPLETED_STATUS : OPEN_STATUS,
+          completedAt: complete ? now : null,
+          updatedAt: now,
+        })
+        .where(eq(sales.id, located.saleId));
 
       const [updated] = await tx
         .select(receivableColumns)
@@ -606,6 +775,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     list,
     getById,
     cancel,
+    deliver,
     listReceivables,
     receivablesSummary,
     setReceivablePaid,

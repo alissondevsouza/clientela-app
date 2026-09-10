@@ -325,8 +325,10 @@ describe("productSchema", () => {
     costCents: 6494,
     priceCents: 9990,
     stockQty: 2,
+    reservedQty: 3,
+    availableQty: -1,
     lowStockThreshold: 1,
-    lowStock: false,
+    lowStock: true,
     createdAt: "2026-09-09T12:00:00.000Z",
     updatedAt: "2026-09-09T12:00:00.000Z",
   } as const;
@@ -348,6 +350,27 @@ describe("productSchema", () => {
     expect(
       productSchema.safeParse({ ...response, purchaseDiscountBps: 10_001 })
         .success,
+    ).toBe(false);
+  });
+
+  it("aceita disponibilidade negativa para tornar a reposição necessária explícita", () => {
+    const product = productSchema.parse({
+      ...response,
+      purchaseDiscountBps: null,
+    });
+
+    expect(product.stockQty).toBe(2);
+    expect(product.reservedQty).toBe(3);
+    expect(product.availableQty).toBe(-1);
+  });
+
+  it("rejeita reserva negativa", () => {
+    expect(
+      productSchema.safeParse({
+        ...response,
+        purchaseDiscountBps: null,
+        reservedQty: -1,
+      }).success,
     ).toBe(false);
   });
 });
