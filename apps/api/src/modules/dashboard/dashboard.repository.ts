@@ -34,7 +34,7 @@ const toSafeInteger = (value: string | number, field: string): number => {
 // intervalo (em vez de `date_trunc` na coluna) evita função sobre coluna
 // indexável, embora aqui o filtro dominante seja `consultant_id`.
 const monthSalesScope = (consultantId: string): SQL =>
-  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.soldAt} >= date_trunc('month', now()) AND ${sales.soldAt} < date_trunc('month', now()) + interval '1 month'`;
+  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.completedAt} >= date_trunc('month', now()) AND ${sales.completedAt} < date_trunc('month', now()) + interval '1 month'`;
 
 // Única camada que toca o banco (api.md/database.md). Leitura agregada
 // cross-tabela (sales/sale_items/receivables/consultants) é o domínio do
@@ -44,75 +44,98 @@ const monthSalesScope = (consultantId: string): SQL =>
 export const createDashboardRepository = (
   db: Database,
 ): DashboardRepositoryPort => {
-  const summary = async (
-    consultantId: string,
-  ): Promise<DashboardSummaryData> => {
-    const [salesRow] = await db
-      .select({
-        monthSalesCents: sql<string>`COALESCE(SUM(${sales.totalCents}), 0)::bigint`,
-        monthSalesCount: sql<string>`COUNT(*)`,
-      })
-      .from(sales)
-      .where(monthSalesScope(consultantId));
+  // Todos os agregados na MESMA leitura (RF-10): transação read-only
+  // REPEATABLE READ garante um snapshot único — concluir, estornar ou cancelar
+  // em paralelo nunca produz uma resposta que mistura commits diferentes.
+  const summary = async (consultantId: string): Promise<DashboardSummaryData> =>
+    db.transaction(
+      async (tx) => {
+        const [salesRow] = await tx
+          .select({
+            monthSalesCents: sql<string>`COALESCE(SUM(${sales.totalCents}), 0)::bigint`,
+            monthSalesCount: sql<string>`COUNT(*)`,
+          })
+          .from(sales)
+          .where(monthSalesScope(consultantId));
 
-    // Lucro do mês (RF-03/RF-04): soma sobre os itens das vendas do mês
-    // corrente, `(unit_price_cents - cost_cents) * qty`, com cast para bigint
-    // ANTES da multiplicação (evita overflow de integer). COM SINAL — pode ser
-    // negativo (override de preço abaixo do custo).
-    const [profitRow] = await db
-      .select({
-        monthProfitCents: sql<string>`COALESCE(SUM((${saleItems.unitPriceCents} - ${saleItems.costCents})::bigint * ${saleItems.qty}), 0)`,
-      })
-      .from(saleItems)
-      .innerJoin(sales, eq(saleItems.saleId, sales.id))
-      .where(monthSalesScope(consultantId));
+        const [openSalesRow] = await tx
+          .select({
+            openSalesCents: sql<string>`COALESCE(SUM(${sales.totalCents}), 0)::bigint`,
+            openSalesCount: sql<string>`COUNT(*)`,
+          })
+          .from(sales)
+          .where(
+            sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = 'open'`,
+          );
 
-    // Recebíveis: MESMA query do `receivablesSummary` (sales.repository) —
-    // `FILTER` separa pendente de vencido; `::bigint` evita overflow.
-    const [receivablesRow] = await db
-      .select({
-        pendingCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL), 0)::bigint`,
-        overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE), 0)::bigint`,
-        overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE)`,
-      })
-      .from(receivables)
-      .innerJoin(sales, eq(receivables.saleId, sales.id))
-      .where(eq(sales.consultantId, consultantId));
+        // Lucro do mês (RF-03/RF-04): soma sobre os itens das vendas do mês
+        // corrente, `(unit_price_cents - cost_cents) * qty`, com cast para bigint
+        // ANTES da multiplicação (evita overflow de integer). COM SINAL — pode ser
+        // negativo (override de preço abaixo do custo).
+        const [profitRow] = await tx
+          .select({
+            monthProfitCents: sql<string>`COALESCE(SUM((${saleItems.unitPriceCents} - ${saleItems.costCents})::bigint * ${saleItems.qty}), 0)`,
+          })
+          .from(saleItems)
+          .innerJoin(sales, eq(saleItems.saleId, sales.id))
+          .where(monthSalesScope(consultantId));
 
-    const [consultantRow] = await db
-      .select({ monthlyGoalCents: consultants.monthlyGoalCents })
-      .from(consultants)
-      .where(eq(consultants.id, consultantId))
-      .limit(1);
+        // Recebíveis: MESMA query do `receivablesSummary` (sales.repository) —
+        // `FILTER` separa pendente de vencido; `::bigint` evita overflow.
+        const [receivablesRow] = await tx
+          .select({
+            pendingCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL), 0)::bigint`,
+            overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE), 0)::bigint`,
+            overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE)`,
+          })
+          .from(receivables)
+          .innerJoin(sales, eq(receivables.saleId, sales.id))
+          .where(eq(sales.consultantId, consultantId));
 
-    return {
-      monthSalesCents: toSafeInteger(
-        salesRow?.monthSalesCents ?? 0,
-        "monthSalesCents",
-      ),
-      monthSalesCount: toSafeInteger(
-        salesRow?.monthSalesCount ?? 0,
-        "monthSalesCount",
-      ),
-      monthProfitCents: toSafeInteger(
-        profitRow?.monthProfitCents ?? 0,
-        "monthProfitCents",
-      ),
-      pendingReceivablesCents: toSafeInteger(
-        receivablesRow?.pendingCents ?? 0,
-        "pendingReceivablesCents",
-      ),
-      overdueReceivablesCents: toSafeInteger(
-        receivablesRow?.overdueCents ?? 0,
-        "overdueReceivablesCents",
-      ),
-      overdueReceivablesCount: toSafeInteger(
-        receivablesRow?.overdueCount ?? 0,
-        "overdueReceivablesCount",
-      ),
-      monthlyGoalCents: consultantRow?.monthlyGoalCents ?? null,
-    };
-  };
+        const [consultantRow] = await tx
+          .select({ monthlyGoalCents: consultants.monthlyGoalCents })
+          .from(consultants)
+          .where(eq(consultants.id, consultantId))
+          .limit(1);
+
+        return {
+          monthSalesCents: toSafeInteger(
+            salesRow?.monthSalesCents ?? 0,
+            "monthSalesCents",
+          ),
+          monthSalesCount: toSafeInteger(
+            salesRow?.monthSalesCount ?? 0,
+            "monthSalesCount",
+          ),
+          monthProfitCents: toSafeInteger(
+            profitRow?.monthProfitCents ?? 0,
+            "monthProfitCents",
+          ),
+          openSalesCents: toSafeInteger(
+            openSalesRow?.openSalesCents ?? 0,
+            "openSalesCents",
+          ),
+          openSalesCount: toSafeInteger(
+            openSalesRow?.openSalesCount ?? 0,
+            "openSalesCount",
+          ),
+          pendingReceivablesCents: toSafeInteger(
+            receivablesRow?.pendingCents ?? 0,
+            "pendingReceivablesCents",
+          ),
+          overdueReceivablesCents: toSafeInteger(
+            receivablesRow?.overdueCents ?? 0,
+            "overdueReceivablesCents",
+          ),
+          overdueReceivablesCount: toSafeInteger(
+            receivablesRow?.overdueCount ?? 0,
+            "overdueReceivablesCount",
+          ),
+          monthlyGoalCents: consultantRow?.monthlyGoalCents ?? null,
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
 
   // Grava/remove a meta mensal (consultora sempre existe na sessão — plan.md:
   // sem erro de domínio próprio aqui). `null` remove a meta.

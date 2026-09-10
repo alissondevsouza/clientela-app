@@ -94,12 +94,17 @@ const CONSULTANT_B = {
 // existe" e "não é sua" respondem o MESMO 404 (RF-04/RF-05/RF-06).
 const NONEXISTENT_UUID = "00000000-0000-4000-8000-000000000000";
 
-// Datas puras (yyyy-mm-dd) para vencimentos determinísticos. `FUTURE_...` é o
-// primeiro vencimento canônico do spec (dia 31 ⇒ clamp de mês sem drift). Como a
-// feature está sendo implementada em 2026-07, essas datas são futuras.
-const FIRST_DUE_DATE = "2026-08-31";
-const FIRST_DUE_DATE_M1 = "2026-09-30"; // clamp: setembro só tem 30 dias
-const FIRST_DUE_DATE_M2 = "2026-10-31"; // ancorado no dia 31 (sem drift para 28)
+// O próximo janeiro mantém o vencimento sempre futuro e preserva a prova de
+// clamp mensal: 31/jan ⇒ último dia de fevereiro ⇒ 31/mar, sem drift.
+const FIRST_DUE_YEAR = new Date().getFullYear() + 1;
+const FIRST_DUE_FEBRUARY_DAY =
+  (FIRST_DUE_YEAR % 4 === 0 && FIRST_DUE_YEAR % 100 !== 0) ||
+  FIRST_DUE_YEAR % 400 === 0
+    ? 29
+    : 28;
+const FIRST_DUE_DATE = `${FIRST_DUE_YEAR}-01-31`;
+const FIRST_DUE_DATE_M1 = `${FIRST_DUE_YEAR}-02-${FIRST_DUE_FEBRUARY_DAY}`;
+const FIRST_DUE_DATE_M2 = `${FIRST_DUE_YEAR}-03-31`;
 // Data claramente no passado: rejeitada pela fronteira (firstDueDate < ontem).
 const PAST_DUE_DATE = "2020-01-01";
 // due_dates de fixtures de recebíveis semeados diretamente.
@@ -272,6 +277,7 @@ describe("sales (integração)", () => {
   type SeedProductValues = {
     name: string;
     costCents?: number;
+    purchaseDiscountBps?: number | null;
     priceCents: number;
     stockQty?: number;
   };
@@ -322,6 +328,8 @@ describe("sales (integração)", () => {
     consultantId: string,
     values: SeedSaleValues,
   ): Promise<string> => {
+    const seededAt = new Date();
+    const status = values.status ?? "completed";
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -330,7 +338,19 @@ describe("sales (integração)", () => {
         clientName: values.clientName ?? "Cliente Semeada",
         totalCents: values.totalCents,
         paymentMethod: values.paymentMethod ?? "credit",
-        status: values.status ?? "completed",
+        paymentCondition:
+          (values.paymentMethod ?? "credit") === "credit"
+            ? "installments"
+            : "received",
+        installments: 1,
+        status,
+        soldAt: seededAt,
+        createdAt: seededAt,
+        updatedAt: seededAt,
+        ...(status === "completed"
+          ? { deliveredAt: seededAt, completedAt: seededAt }
+          : {}),
+        ...(status === "canceled" ? { canceledAt: seededAt } : {}),
       })
       .returning({ id: sales.id });
     if (!row) {
@@ -343,6 +363,7 @@ describe("sales (integração)", () => {
     saleId: string,
     values: { amountCents: number; dueDate: string; paidAt?: Date | null },
   ): Promise<string> => {
+    const timestamp = values.paidAt ?? new Date();
     const [row] = await ctx.db
       .insert(receivables)
       .values({
@@ -350,6 +371,8 @@ describe("sales (integração)", () => {
         amountCents: values.amountCents,
         dueDate: values.dueDate,
         paidAt: values.paidAt ?? null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
       })
       .returning({ id: receivables.id });
     if (!row) {
@@ -360,6 +383,37 @@ describe("sales (integração)", () => {
 
   // ------------------------- requesters HTTP -------------------------
 
+  // Os cenários CRM-06 usavam `credit` e não expressavam entrega/condição.
+  // O helper preserva a intenção deles (venda entregue, ainda a receber) no
+  // contrato CRM-12; novos testes devem enviar o payload explícito diretamente.
+  const lifecyclePayload = (body: unknown): unknown => {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return body;
+    }
+    const value = body as Record<string, unknown>;
+    const legacyCredit = value.paymentMethod === "credit";
+    const legacySingleInstallment = legacyCredit && value.installments === 1;
+    return {
+      ...value,
+      paymentMethod: legacySingleInstallment
+        ? "card"
+        : legacyCredit
+          ? "pix"
+          : value.paymentMethod,
+      deliveryStatus: value.deliveryStatus ?? "delivered",
+      paymentCondition:
+        value.paymentCondition ??
+        (legacySingleInstallment
+          ? "on_delivery"
+          : legacyCredit
+            ? "installments"
+            : "on_delivery"),
+      installments: value.installments ?? 1,
+      ...(legacySingleInstallment ? { cardType: "credit" } : {}),
+      ...(legacySingleInstallment ? { firstDueDate: undefined } : {}),
+    };
+  };
+
   const postSale = (
     app: App,
     body: unknown,
@@ -369,7 +423,7 @@ describe("sales (integração)", () => {
       new Request("http://localhost/sales", {
         method: "POST",
         headers: jsonHeaders(token),
-        body: JSON.stringify(body),
+        body: JSON.stringify(lifecyclePayload(body)),
       }),
     );
 
@@ -400,6 +454,18 @@ describe("sales (integração)", () => {
   ): Promise<Response> =>
     app.handle(
       new Request(`http://localhost/sales/${id}/cancel`, {
+        method: "POST",
+        headers: token ? bearer(token) : {},
+      }),
+    );
+
+  const deliverSale = (
+    app: App,
+    id: string,
+    token?: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/sales/${id}/deliver`, {
         method: "POST",
         headers: token ? bearer(token) : {},
       }),
@@ -444,6 +510,20 @@ describe("sales (integração)", () => {
       new Request(`http://localhost/products/${id}`, {
         method: "GET",
         headers: bearer(token),
+      }),
+    );
+
+  const patchProduct = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/products/${id}`, {
+        method: "PATCH",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
       }),
     );
 
@@ -545,11 +625,12 @@ describe("sales (integração)", () => {
       // Total = 2×3000 (override) + 1×5000 (default) = 11000 — nunca o forjado.
       expect(sale.totalCents).toBe(11_000);
       expect(sale.paymentMethod).toBe("cash");
-      expect(sale.status).toBe("completed");
+      expect(sale.status).toBe("open");
       expect(sale.clientId).toBe(clientId);
       expect(sale.clientName).toBe("Ana Maria");
       // Método à vista não gera recebíveis.
-      expect(sale.receivables).toEqual([]);
+      expect(sale.receivables).toHaveLength(1);
+      expect(sale.receivables[0]?.status).toBe("pending");
 
       // Snapshot de nome/preço por item.
       const soldA = itemByProduct(sale, productA);
@@ -566,7 +647,7 @@ describe("sales (integração)", () => {
       expect(await stockOf(app, productB, token)).toBe(4);
     });
 
-    it("grava cost_cents do produto em cada item (snapshot); mudar o custo do produto DEPOIS não altera o item já vendido (CRM-07/RF-02)", async () => {
+    it("congela no item o custo calculado por desconto; mudar a taxa do produto depois não altera a venda (CRM-11/RF-07)", async () => {
       const app = buildApp();
       const { consultantId, token } = await seedConsultantSession(
         app,
@@ -574,7 +655,8 @@ describe("sales (integração)", () => {
       );
       const productId = await seedProduct(consultantId, {
         name: "Perfume Floral",
-        costCents: 4_200,
+        costCents: 6_494,
+        purchaseDiscountBps: 3_500,
         priceCents: 9_990,
         stockQty: 10,
       });
@@ -594,19 +676,26 @@ describe("sales (integração)", () => {
         .select()
         .from(saleItems)
         .where(eq(saleItems.saleId, sale.id));
-      expect(itemRow?.costCents).toBe(4_200);
+      expect(itemRow?.costCents).toBe(6_494);
 
-      // Alterar o custo do produto DEPOIS não muda o snapshot já gravado.
-      await ctx.db
-        .update(products)
-        .set({ costCents: 9_000 })
-        .where(eq(products.id, productId));
+      // Alterar a taxa pela API recalcula o custo vivo do produto, mas não
+      // reescreve o snapshot de custo da venda já concluída.
+      const patchResponse = await patchProduct(
+        app,
+        productId,
+        { purchaseDiscountBps: 4_000 },
+        token,
+      );
+      expect(patchResponse.status).toBe(HTTP_OK);
+      const updatedProduct = productSchema.parse(await patchResponse.json());
+      expect(updatedProduct.costCents).toBe(5_994);
+      expect(updatedProduct.purchaseDiscountBps).toBe(4_000);
 
       const [itemAfterCostChange] = await ctx.db
         .select()
         .from(saleItems)
         .where(eq(saleItems.saleId, sale.id));
-      expect(itemAfterCostChange?.costCents).toBe(4_200);
+      expect(itemAfterCostChange?.costCents).toBe(6_494);
     });
   });
 
@@ -769,7 +858,7 @@ describe("sales (integração)", () => {
 
       expect(sale.receivables).toHaveLength(1);
       expect(sale.receivables[0]?.amountCents).toBe(7_777);
-      expect(sale.receivables[0]?.dueDate).toBe(FIRST_DUE_DATE);
+      expect(sale.receivables[0]?.dueKind).toBe("scheduled");
     });
 
     it("credit com total < installments ⇒ 422 INVALID_SALE_CREDIT pt-BR", async () => {
@@ -798,7 +887,7 @@ describe("sales (integração)", () => {
       expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
       const body = apiErrorSchema.parse(await response.json());
       expect(body.error.code).toBe(INVALID_SALE_CREDIT_CODE);
-      expect(body.error.message).toMatch(/parcelas/i);
+      expect(body.error.message).toMatch(/parcela/i);
     });
 
     it("firstDueDate no passado ⇒ 422 pt-BR na fronteira", async () => {
@@ -898,8 +987,12 @@ describe("sales (integração)", () => {
       expect(cancelResponse.status).toBe(HTTP_OK);
       const canceled = saleSchema.parse(await cancelResponse.json());
       expect(canceled.status).toBe("canceled");
-      // Pendentes removidos.
-      expect(canceled.receivables).toEqual([]);
+      // Pendentes são anulados para preservar a auditoria.
+      expect(
+        canceled.receivables.every(
+          (receivable) => receivable.status === "voided",
+        ),
+      ).toBe(true);
 
       // A lista "quem me deve" não mostra mais nada dessa venda.
       const list = receivablesListSchema.parse(
@@ -954,7 +1047,7 @@ describe("sales (integração)", () => {
       const after = saleSchema.parse(
         await (await getSale(app, sale.id, token)).json(),
       );
-      expect(after.status).toBe("completed");
+      expect(after.status).toBe("open");
       expect(after.receivables).toHaveLength(2);
       const paid = after.receivables.find((r) => r.id === firstReceivable.id);
       expect(paid?.paidAt).not.toBeNull();
@@ -1041,7 +1134,11 @@ describe("sales (integração)", () => {
           // Cancelamento venceu: parcela pendente removida, nunca cancelada+paga.
           expect(cancelResponse.status).toBe(HTTP_OK);
           expect(payResponse.status).not.toBe(HTTP_OK);
-          expect(final.receivables).toEqual([]);
+          expect(
+            final.receivables.every(
+              (receivable) => receivable.status === "voided",
+            ),
+          ).toBe(true);
         } else {
           // Pagamento venceu: venda segue completed com a parcela paga.
           expect(final.status).toBe("completed");
@@ -1443,6 +1540,333 @@ describe("sales (integração)", () => {
   // -------------------------------------------------------------------------
   // RF-04/05/06 — cross-tenant, escopo, 401 e id malformado
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // CRM-12 — ciclo de venda: entrega, projeção financeira e tempo canônico
+  // -------------------------------------------------------------------------
+  describe("ciclo de venda (CRM-12)", () => {
+    it("listagem devolve o estado financeiro REAL de cada venda (paga, parcial e pendente)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Hidratante",
+        priceCents: 5_000,
+        stockQty: 50,
+      });
+
+      // (a) Já recebida e entregue ⇒ paga, sem saldo.
+      const paidSale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 2 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      // (b) Parcelada em 2×, uma parcela baixada ⇒ parcialmente paga.
+      const partialSale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 4 }],
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: FIRST_DUE_DATE,
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      const firstReceivable = partialSale.receivables[0];
+      if (!firstReceivable) {
+        throw new Error("venda parcelada sem recebível");
+      }
+      expect(
+        (await patchReceivable(app, firstReceivable.id, { paid: true }, token))
+          .status,
+      ).toBe(HTTP_OK);
+      // (c) A receber na entrega, ainda não entregue ⇒ pendente integral.
+      const pendingSale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+
+      const list = salesListSchema.parse(
+        await (await getSales(app, token)).json(),
+      );
+      const byId = new Map(list.data.map((sale) => [sale.id, sale]));
+
+      const paid = byId.get(paidSale.id);
+      expect(paid?.paymentStatus).toBe("paid");
+      expect(paid?.paidCents).toBe(paidSale.totalCents);
+      expect(paid?.outstandingCents).toBe(0);
+
+      const partial = byId.get(partialSale.id);
+      expect(partial?.paymentStatus).toBe("partial");
+      expect(partial?.paidCents).toBe(firstReceivable.amountCents);
+      expect(partial?.outstandingCents).toBe(
+        partialSale.totalCents - firstReceivable.amountCents,
+      );
+
+      const pending = byId.get(pendingSale.id);
+      expect(pending?.paymentStatus).toBe("pending");
+      expect(pending?.paidCents).toBe(0);
+      expect(pending?.outstandingCents).toBe(pendingSale.totalCents);
+      expect(pending?.deliveryStatus).toBe("pending");
+
+      // A lista concorda com o detalhe — a projeção é a MESMA regra.
+      const detail = saleSchema.parse(
+        await (await getSale(app, partialSale.id, token)).json(),
+      );
+      expect(detail.paymentStatus).toBe(partial?.paymentStatus);
+      expect(detail.paidCents).toBe(partial?.paidCents);
+      expect(detail.outstandingCents).toBe(partial?.outstandingCents);
+    });
+
+    it("venda cancelada não exibe dívida nem crédito cobrável na listagem", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Máscara",
+        priceCents: 4_000,
+        stockQty: 10,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      expect((await cancelSale(app, sale.id, token)).status).toBe(HTTP_OK);
+
+      const list = salesListSchema.parse(
+        await (await getSales(app, token)).json(),
+      );
+      const canceled = list.data.find((entry) => entry.id === sale.id);
+      expect(canceled?.status).toBe("canceled");
+      expect(canceled?.paymentStatus).toBe("voided");
+      expect(canceled?.paidCents).toBe(0);
+      expect(canceled?.outstandingCents).toBe(0);
+    });
+
+    it("criação recebida e entregue grava UM instante canônico em todos os campos correlatos", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Perfume",
+        priceCents: 12_000,
+        stockQty: 3,
+      });
+
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+
+      // Todos os terminais desta criação vêm do MESMO transaction_timestamp()
+      // do Postgres — nenhum depende do relógio da aplicação nem de default.
+      expect(sale.createdAt).toBe(sale.soldAt);
+      expect(sale.updatedAt).toBe(sale.soldAt);
+      expect(sale.deliveredAt).toBe(sale.soldAt);
+      expect(sale.completedAt).toBe(sale.soldAt);
+      const receivable = sale.receivables[0];
+      expect(receivable?.createdAt).toBe(sale.soldAt);
+      expect(receivable?.updatedAt).toBe(sale.soldAt);
+      expect(receivable?.paidAt).toBe(sale.soldAt);
+    });
+
+    it("entrega baixa o estoque uma vez, materializa o vencimento e conclui a venda já paga", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Sabonete",
+        priceCents: 2_500,
+        stockQty: 4,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 2 }],
+          paymentMethod: "pix",
+          paymentCondition: "received",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      expect(sale.status).toBe("open");
+      expect(sale.receivables[0]?.dueKind).toBe("scheduled");
+      // Venda aberta RESERVA, não baixa: o estoque físico segue intacto.
+      const beforeDelivery = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(beforeDelivery.stockQty).toBe(4);
+      expect(beforeDelivery.reservedQty).toBe(2);
+      expect(beforeDelivery.availableQty).toBe(2);
+
+      const delivered = saleSchema.parse(
+        await (await deliverSale(app, sale.id, token)).json(),
+      );
+      expect(delivered.status).toBe("completed");
+      expect(delivered.deliveryStatus).toBe("delivered");
+      expect(delivered.completedAt).toBe(delivered.deliveredAt);
+
+      const afterDelivery = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(afterDelivery.stockQty).toBe(2);
+      expect(afterDelivery.reservedQty).toBe(0);
+
+      // Segunda entrega é conflito e NÃO debita de novo.
+      expect((await deliverSale(app, sale.id, token)).status).toBe(
+        HTTP_CONFLICT,
+      );
+      const afterSecondAttempt = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(afterSecondAttempt.stockQty).toBe(2);
+    });
+
+    it("entrega sem estoque suficiente informa a quantidade REAL restante e não altera nada", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Delineador",
+        priceCents: 3_000,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 4 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      // Estoque cai para 2 depois da venda aberta (ajuste físico é permitido).
+      expect(
+        (await patchProduct(app, productId, { stockQty: 2 }, token)).status,
+      ).toBe(HTTP_OK);
+
+      const response = await deliverSale(app, sale.id, token);
+      expect(response.status).toBe(HTTP_CONFLICT);
+      const body = apiErrorSchema.parse(await response.json());
+      // Mensagem acionável: precisa dizer o que REALMENTE resta (2), não "0".
+      expect(body.error.message).toContain("restam 2 unidades");
+      expect(body.error.message).toContain("Delineador");
+
+      const product = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(product.stockQty).toBe(2);
+      const unchanged = saleSchema.parse(
+        await (await getSale(app, sale.id, token)).json(),
+      );
+      expect(unchanged.status).toBe("open");
+      expect(unchanged.deliveredAt).toBeNull();
+    });
+  });
+
+  describe("quem me deve com o novo plano (CRM-12/RF-09)", () => {
+    it("cobrança na entrega entra na lista sem data e sem atraso; anulada nunca aparece", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Creme",
+        priceCents: 7_000,
+        stockQty: 10,
+      });
+      const onDeliverySale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      const canceledSale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      expect((await cancelSale(app, canceledSale.id, token)).status).toBe(
+        HTTP_OK,
+      );
+
+      const pendingList = receivablesListSchema.parse(
+        await (await getReceivables(app, token)).json(),
+      );
+      expect(pendingList.data).toHaveLength(1);
+      const [entry] = pendingList.data;
+      expect(entry?.saleId).toBe(onDeliverySale.id);
+      expect(entry?.dueDate).toBeNull();
+      expect(entry?.dueKind).toBe("on_delivery");
+      // Sem data não há atraso: `overdue` precisa ser boolean, nunca nulo.
+      expect(entry?.overdue).toBe(false);
+
+      // Mesmo no modo histórico a cobrança anulada fica fora da cobrança.
+      const allList = receivablesListSchema.parse(
+        await (await getReceivables(app, token, "?pending=false")).json(),
+      );
+      expect(allList.data.some((row) => row.saleId === canceledSale.id)).toBe(
+        false,
+      );
+      // Ela continua visível no detalhe da venda, como histórico anulado.
+      const canceledDetail = saleSchema.parse(
+        await (await getSale(app, canceledSale.id, token)).json(),
+      );
+      expect(canceledDetail.receivables[0]?.status).toBe("voided");
+
+      const summary = receivablesSummarySchema.parse(
+        await (await getReceivablesSummary(app, token)).json(),
+      );
+      expect(summary.pendingCents).toBe(onDeliverySale.totalCents);
+      expect(summary.overdueCount).toBe(0);
+    });
+  });
+
   describe("cross-tenant e escopo (RF-04/05/06)", () => {
     it("GET /sales/:id, cancel e PATCH /receivables de outra consultora ⇒ 404 idêntico ao inexistente", async () => {
       const app = buildApp();

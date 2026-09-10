@@ -1,5 +1,6 @@
 "use client";
 
+import { SALE_STATUS_LABELS } from "@clientela/shared";
 import type { FormEvent } from "react";
 import { useState, useTransition } from "react";
 import type {
@@ -14,8 +15,7 @@ const SELECT_LABEL = "Venda vinculada";
 const NONE_OPTION_LABEL = "Sem venda vinculada";
 const SAVE_LABEL = "Salvar vínculo";
 const SAVING_LABEL = "Salvando...";
-const EMPTY_HINT =
-  "Nenhuma venda concluída disponível para vincular no momento.";
+const EMPTY_HINT = "Nenhuma venda ativa disponível para vincular no momento.";
 const SELECT_ID = "appointment-sale-link";
 const CURRENT_SALE_FALLBACK_LABEL = "Venda vinculada atual";
 
@@ -27,8 +27,10 @@ const SELECT_CLASS_NAME =
 const toDatePart = (isoDateTime: string): string =>
   isoDateTime.split(ISO_DATE_TIME_SEPARATOR)[0] ?? isoDateTime;
 
+// O status entra no rótulo: a lista agora mistura venda em aberto e concluída
+// (CRM-12), e a diferença precisa aparecer em TEXTO, não só na escolha.
 const describeSale = (sale: LinkableSale): string =>
-  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatDateBr(toDatePart(sale.soldAt))}`;
+  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatDateBr(toDatePart(sale.soldAt))} · ${SALE_STATUS_LABELS[sale.status]}`;
 
 export type SaleLinkFormProps = {
   currentSaleId: string | null;

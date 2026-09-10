@@ -1,16 +1,102 @@
-import type {
-  CreateProduct,
-  Paginated,
-  Product,
-  ProductsListQuery,
-  ProductsSummary,
-  UpdateProduct,
+import {
+  type CreateProduct,
+  calculateDiscountedCostCents,
+  type Paginated,
+  type Product,
+  type ProductsListQuery,
+  type ProductsSummary,
+  type UpdateProduct,
 } from "@clientela/shared";
 import { ProductNotFoundError } from "./products.errors";
 
-// Dados de inserção: os campos validados na fronteira mais a consultora da
-// sessão (nunca do body — RF-03). O service compõe; o repository persiste.
-export type InsertProduct = CreateProduct & { consultantId: string };
+const INVALID_CREATE_COST_MESSAGE =
+  "Informe o custo diretamente ou o desconto de compra.";
+
+type ResolvedCreateProduct = Omit<
+  CreateProduct,
+  "costCents" | "purchaseDiscountBps"
+> & {
+  costCents: number;
+  purchaseDiscountBps: number | null;
+};
+
+// Dados de inserção resolvidos pelo service: o custo é sempre materializado e
+// a taxa é sempre normalizada para `number | null` antes de tocar o banco.
+export type InsertProduct = ResolvedCreateProduct & { consultantId: string };
+
+export type ProductUpdateResolver = (
+  current: Product,
+  patch: UpdateProduct,
+) => UpdateProduct;
+
+export const resolveProductCreate = (
+  input: CreateProduct,
+): ResolvedCreateProduct => {
+  const purchaseDiscountBps = input.purchaseDiscountBps;
+  if (purchaseDiscountBps !== undefined && purchaseDiscountBps !== null) {
+    return {
+      ...input,
+      costCents: calculateDiscountedCostCents(
+        input.priceCents,
+        purchaseDiscountBps,
+      ),
+      purchaseDiscountBps,
+    };
+  }
+
+  if (input.costCents === undefined) {
+    // Estado impossível após createProductSchema; mantém a função segura para
+    // chamadas internas diretas sem transformar falha de contrato em NaN.
+    throw new Error(INVALID_CREATE_COST_MESSAGE);
+  }
+
+  return {
+    ...input,
+    costCents: input.costCents,
+    purchaseDiscountBps: null,
+  };
+};
+
+// Regra financeira pura do PATCH. O retorno contém somente as chaves enviadas
+// e as chaves financeiras que precisam ser derivadas para manter a invariante.
+// O repository a executa com a versão da linha já bloqueada na transação.
+export const resolveProductUpdate: ProductUpdateResolver = (current, patch) => {
+  const { costCents, purchaseDiscountBps, ...submittedPatch } = patch;
+
+  if (costCents !== undefined) {
+    return {
+      ...submittedPatch,
+      costCents,
+      purchaseDiscountBps: null,
+    };
+  }
+
+  if (purchaseDiscountBps === null) {
+    return {
+      ...submittedPatch,
+      purchaseDiscountBps: null,
+    };
+  }
+
+  const effectiveDiscountBps =
+    purchaseDiscountBps ?? current.purchaseDiscountBps;
+  const pricingChanged =
+    purchaseDiscountBps !== undefined || patch.priceCents !== undefined;
+
+  if (effectiveDiscountBps !== null && pricingChanged) {
+    const effectivePriceCents = patch.priceCents ?? current.priceCents;
+    return {
+      ...submittedPatch,
+      ...(purchaseDiscountBps === undefined ? {} : { purchaseDiscountBps }),
+      costCents: calculateDiscountedCostCents(
+        effectivePriceCents,
+        effectiveDiscountBps,
+      ),
+    };
+  }
+
+  return submittedPatch;
+};
 
 export type ListProductsParams = {
   page: number;
@@ -30,6 +116,7 @@ export type ProductsRepositoryPort = {
     consultantId: string,
     id: string,
     patch: UpdateProduct,
+    resolve: ProductUpdateResolver,
   ) => Promise<Product | undefined>;
   delete: (consultantId: string, id: string) => Promise<boolean>;
   list: (
@@ -49,7 +136,8 @@ export const createProductsService = ({ repository }: ProductsServiceDeps) => {
   const create = (
     consultantId: string,
     input: CreateProduct,
-  ): Promise<Product> => repository.insert({ consultantId, ...input });
+  ): Promise<Product> =>
+    repository.insert({ consultantId, ...resolveProductCreate(input) });
 
   const getById = async (
     consultantId: string,
@@ -62,15 +150,17 @@ export const createProductsService = ({ repository }: ProductsServiceDeps) => {
     return product;
   };
 
-  // `patch` já vem validado da fronteira (updateProductSchema): chaves ausentes
-  // = não alterar; `null` explícito em `brandCode` = limpar. O service apenas
-  // repassa — o repository monta o SET (o `null` chega intacto ao banco).
   const update = async (
     consultantId: string,
     id: string,
     patch: UpdateProduct,
   ): Promise<Product> => {
-    const updated = await repository.update(consultantId, id, patch);
+    const updated = await repository.update(
+      consultantId,
+      id,
+      patch,
+      resolveProductUpdate,
+    );
     if (!updated) {
       throw new ProductNotFoundError();
     }

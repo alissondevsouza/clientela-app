@@ -1,3 +1,4 @@
+import { type DueKind, dueKindValues } from "@clientela/shared";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -5,6 +6,7 @@ import {
   index,
   integer,
   pgTable,
+  text,
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -25,9 +27,14 @@ export const receivables = pgTable(
     // Vencimento não tem hora nem fuso: coluna `date` em modo string evita o
     // shift de timezone do driver (armazena/devolve "yyyy-mm-dd" literal) —
     // coerente com clients.birthday.
-    dueDate: date("due_date", { mode: "string" }).notNull(),
+    dueDate: date("due_date", { mode: "string" }),
+    dueKind: text("due_kind", { enum: dueKindValues })
+      .$type<DueKind>()
+      .notNull()
+      .default("scheduled"),
     // null = pendente; timestamp = data da baixa do pagamento.
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    voidedAt: timestamp("voided_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -42,6 +49,22 @@ export const receivables = pgTable(
     check(
       "receivables_amount_cents_check",
       sql`${table.amountCents} > ${sql.raw("0")}`,
+    ),
+    check(
+      "receivables_due_kind_check",
+      sql`${table.dueKind} IN ('scheduled', 'on_delivery', 'unknown')`,
+    ),
+    check(
+      "receivables_due_date_kind_check",
+      sql`(${table.dueKind} = 'scheduled' AND ${table.dueDate} IS NOT NULL)
+        OR (${table.dueKind} IN ('on_delivery', 'unknown') AND ${table.dueDate} IS NULL)`,
+    ),
+    check(
+      "receivables_temporal_matrix_check",
+      sql`${table.createdAt} <= ${table.updatedAt}
+        AND (${table.paidAt} IS NULL OR (${table.createdAt} <= ${table.paidAt} AND ${table.paidAt} <= ${table.updatedAt}))
+        AND (${table.voidedAt} IS NULL OR (${table.createdAt} <= ${table.voidedAt} AND ${table.voidedAt} <= ${table.updatedAt}))
+        AND NOT (${table.paidAt} IS NOT NULL AND ${table.voidedAt} IS NOT NULL)`,
     ),
     // Postgres não indexa FK automaticamente (database.md): índice para carregar
     // os recebíveis de uma venda.

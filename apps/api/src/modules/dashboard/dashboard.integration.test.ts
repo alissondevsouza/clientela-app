@@ -3,6 +3,7 @@ import {
   apiErrorSchema,
   dashboardSummarySchema,
   loginResponseSchema,
+  productSchema,
   receivablesSummarySchema,
 } from "@clientela/shared";
 import { eq } from "drizzle-orm";
@@ -252,6 +253,8 @@ describe("dashboard (integração)", () => {
     consultantId: string,
     values: SeedSaleValues,
   ): Promise<string> => {
+    const timestamp = values.soldAt ?? new Date();
+    const status = values.status ?? "completed";
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -260,8 +263,15 @@ describe("dashboard (integração)", () => {
         clientName: "Cliente Semeada",
         totalCents: values.totalCents,
         paymentMethod: "cash",
-        status: values.status ?? "completed",
-        ...(values.soldAt ? { soldAt: values.soldAt } : {}),
+        paymentCondition: "received",
+        status,
+        soldAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        ...(status === "completed"
+          ? { deliveredAt: timestamp, completedAt: timestamp }
+          : {}),
+        ...(status === "canceled" ? { canceledAt: timestamp } : {}),
       })
       .returning({ id: sales.id });
     if (!row) {
@@ -293,19 +303,29 @@ describe("dashboard (integração)", () => {
 
   const seedReceivable = async (
     saleId: string,
-    values: { amountCents: number; dueDate: string; paidAt?: Date | null },
+    values: {
+      amountCents: number;
+      dueDate: string;
+      paidAt?: Date | null;
+      voidedAt?: Date | null;
+    },
   ): Promise<void> => {
+    const timestamp = values.paidAt ?? values.voidedAt ?? new Date();
     await ctx.db.insert(receivables).values({
       saleId,
       amountCents: values.amountCents,
       dueDate: values.dueDate,
       paidAt: values.paidAt ?? null,
+      voidedAt: values.voidedAt ?? null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
     });
   };
 
   type SeedProductValues = {
     name: string;
     costCents: number;
+    purchaseDiscountBps?: number | null;
     priceCents: number;
     stockQty: number;
   };
@@ -355,6 +375,20 @@ describe("dashboard (integração)", () => {
     app.handle(
       new Request("http://localhost/sales", {
         method: "POST",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
+      }),
+    );
+
+  const patchProduct = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/products/${id}`, {
+        method: "PATCH",
         headers: jsonHeaders(token),
         body: JSON.stringify(body),
       }),
@@ -503,6 +537,54 @@ describe("dashboard (integração)", () => {
       expect(summary.monthSalesCents).toBe(3_000);
     });
 
+    it("lucro permanece baseado no snapshot da venda após mudar o desconto do produto", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Produto com Desconto",
+        costCents: 6_494,
+        purchaseDiscountBps: 3_500,
+        priceCents: 9_990,
+        stockQty: 10,
+      });
+
+      const saleResponse = await postSale(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+        },
+        token,
+      );
+      expect(saleResponse.status).toBe(HTTP_CREATED);
+
+      const before = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(before.monthSalesCents).toBe(9_990);
+      expect(before.monthProfitCents).toBe(3_496);
+
+      const patchResponse = await patchProduct(
+        app,
+        productId,
+        { purchaseDiscountBps: 4_000 },
+        token,
+      );
+      expect(patchResponse.status).toBe(HTTP_OK);
+      const updatedProduct = productSchema.parse(await patchResponse.json());
+      expect(updatedProduct.costCents).toBe(5_994);
+      expect(updatedProduct.purchaseDiscountBps).toBe(4_000);
+
+      const after = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(after.monthSalesCents).toBe(9_990);
+      expect(after.monthProfitCents).toBe(3_496);
+    });
+
     it("recebíveis do summary batem com o endpoint /receivables/summary existente", async () => {
       const app = buildApp();
       const { consultantId, token } = await seedConsultantSession(
@@ -552,6 +634,47 @@ describe("dashboard (integração)", () => {
       expect(summary.pendingReceivablesCents).toBe(9_500);
       expect(summary.overdueReceivablesCents).toBe(5_500);
       expect(summary.overdueReceivablesCount).toBe(2);
+    });
+
+    it("parcela ANULADA de venda cancelada fica fora de pendente e de atrasado", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const activeSale = await seedSale(consultantId, { totalCents: 10_000 });
+      await seedReceivable(activeSale, {
+        amountCents: 4_000,
+        dueDate: OVERDUE_DATE_EARLY,
+      });
+      // Venda cancelada: a cobrança é ANULADA, não apagada (CRM-12/RF-08).
+      // Dívida anulada não é dívida — não pode inflar "a receber" nem "atrasado".
+      const canceledSale = await seedSale(consultantId, {
+        totalCents: 50_000,
+        status: "canceled",
+      });
+      await seedReceivable(canceledSale, {
+        amountCents: 50_000,
+        dueDate: OVERDUE_DATE_EARLY,
+        voidedAt: new Date("2020-02-01T10:00:00Z"),
+      });
+
+      const summary = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      const receivablesTotals = receivablesSummarySchema.parse(
+        await (await getReceivablesSummary(app, token)).json(),
+      );
+
+      expect(summary.pendingReceivablesCents).toBe(4_000);
+      expect(summary.overdueReceivablesCents).toBe(4_000);
+      expect(summary.overdueReceivablesCount).toBe(1);
+      expect(summary.pendingReceivablesCents).toBe(
+        receivablesTotals.pendingCents,
+      );
+      expect(summary.overdueReceivablesCount).toBe(
+        receivablesTotals.overdueCount,
+      );
     });
   });
 

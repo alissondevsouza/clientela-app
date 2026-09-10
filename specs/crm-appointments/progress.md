@@ -10,7 +10,7 @@ updated: 2026-08-06
 
 **Status:** completed
 **Current Phase:** handoff
-**Current Task:** — (aguardando revisão e commit do humano)
+**Current Task:** — encerrada. Em produção desde 2026-08-06 (PR #2, `730e4b9`).
 
 > Spec **APROVADA** na rodada 3 de revisão neutra de spec (rodadas 1 e 2 reprovaram; 4 CRÍTICOs corrigidos).
 > Implementação **APROVADA** na rodada 3 de QA neutra (rodadas 1 e 2 reprovaram; 2 CRÍTICOs corrigidos).

@@ -31,8 +31,13 @@ const sampleReceivable: Receivable = {
   saleId: SALE_ID,
   amountCents: 3334,
   dueDate: "2026-08-18",
+  dueKind: "scheduled",
   paidAt: null,
+  voidedAt: null,
+  status: "pending",
   overdue: false,
+  createdAt: "2026-07-18T12:00:00.000Z",
+  updatedAt: "2026-07-18T12:00:00.000Z",
 };
 
 // Item da lista "quem me deve": recebível + dados da venda/cliente (RF-06).
@@ -49,8 +54,21 @@ const sampleSale: Sale = {
   clientName: "Maria Silva",
   totalCents: 10000,
   paymentMethod: "credit",
+  paymentCondition: "installments",
+  cardType: null,
+  installments: 3,
+  paymentPlanKnown: true,
   status: "completed",
+  deliveryStatus: "delivered",
+  paymentStatus: "paid",
+  paidCents: 10000,
+  outstandingCents: 0,
   soldAt: "2026-07-18T12:00:00.000Z",
+  deliveredAt: "2026-07-18T12:00:00.000Z",
+  completedAt: "2026-07-18T12:00:00.000Z",
+  canceledAt: null,
+  createdAt: "2026-07-18T12:00:00.000Z",
+  updatedAt: "2026-07-18T12:00:00.000Z",
   items: [
     {
       id: "018f9c2e-4444-7b3d-9e21-0a1b2c3d4e5f",
@@ -69,8 +87,21 @@ const sampleListItem: SaleListItem = {
   clientName: "Maria Silva",
   totalCents: 10000,
   paymentMethod: "credit",
+  paymentCondition: "installments",
+  cardType: null,
+  installments: 3,
+  paymentPlanKnown: true,
   status: "completed",
+  deliveryStatus: "delivered",
+  paymentStatus: "paid",
+  paidCents: 10000,
+  outstandingCents: 0,
   soldAt: "2026-07-18T12:00:00.000Z",
+  deliveredAt: "2026-07-18T12:00:00.000Z",
+  completedAt: "2026-07-18T12:00:00.000Z",
+  canceledAt: null,
+  createdAt: "2026-07-18T12:00:00.000Z",
+  updatedAt: "2026-07-18T12:00:00.000Z",
 };
 
 const sampleSummary: ReceivablesSummary = {
@@ -83,6 +114,9 @@ const validCreateValues: CreateSaleInput = {
   clientId: CLIENT_ID,
   items: [{ productId: PRODUCT_ID, qty: 2 }],
   paymentMethod: "cash",
+  deliveryStatus: "pending",
+  paymentCondition: "on_delivery",
+  installments: 1,
 };
 
 type FetchCall = {
@@ -146,6 +180,8 @@ describe("createSale", () => {
       clientId: CLIENT_ID,
       items: [{ productId: PRODUCT_ID, qty: 2 }],
       paymentMethod: "cash",
+      deliveryStatus: "pending",
+      paymentCondition: "on_delivery",
       installments: 1,
     });
   });
@@ -156,7 +192,13 @@ describe("createSale", () => {
     );
 
     const result = await createSale(
-      { items: [], paymentMethod: "cash" },
+      {
+        items: [],
+        paymentMethod: "cash",
+        deliveryStatus: "pending",
+        paymentCondition: "on_delivery",
+        installments: 1,
+      },
       depsWith(fetchImpl),
     );
 

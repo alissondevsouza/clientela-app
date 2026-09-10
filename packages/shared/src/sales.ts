@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { paginationQuerySchema } from "./pagination";
+import { appLocalDateIso } from "./time";
 
 // ---------------------------------------------------------------------------
 // Enums + labels pt-BR (fonte única shared ← db; o schema Drizzle importa daqui,
 // e o web precisa dos labels/enums sem tocar em `db/`). Padrão de leadStatus.
 // ---------------------------------------------------------------------------
 
-// `credit` = venda a prazo/fiado (gera recebíveis); os demais são à vista.
+// `credit` permanece apenas para ler o histórico anterior ao CRM-12. Novas
+// vendas expressam o parcelamento em `paymentCondition`.
 export const paymentMethodValues = ["cash", "pix", "card", "credit"] as const;
 
 export type PaymentMethod = (typeof paymentMethodValues)[number];
@@ -18,14 +20,87 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   credit: "A prazo",
 };
 
+export const createPaymentMethodValues = ["cash", "pix", "card"] as const;
+
+export type CreatePaymentMethod = (typeof createPaymentMethodValues)[number];
+
 // Venda não se apaga — cancela-se (invariante 5 do domínio).
-export const saleStatusValues = ["completed", "canceled"] as const;
+export const saleStatusValues = ["open", "completed", "canceled"] as const;
 
 export type SaleStatus = (typeof saleStatusValues)[number];
 
 export const SALE_STATUS_LABELS: Record<SaleStatus, string> = {
+  open: "Em aberto",
   completed: "Concluída",
   canceled: "Cancelada",
+};
+
+export const deliveryStatusValues = ["pending", "delivered"] as const;
+
+export type DeliveryStatus = (typeof deliveryStatusValues)[number];
+
+export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
+  pending: "Aguardando entrega",
+  delivered: "Entregue",
+};
+
+export const paymentStatusValues = [
+  "pending",
+  "partial",
+  "paid",
+  "voided",
+] as const;
+
+export type PaymentStatus = (typeof paymentStatusValues)[number];
+
+export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
+  pending: "Pendente",
+  partial: "Parcialmente paga",
+  paid: "Paga",
+  voided: "Anulada",
+};
+
+export const paymentConditionValues = [
+  "received",
+  "on_delivery",
+  "installments",
+] as const;
+
+export type PaymentCondition = (typeof paymentConditionValues)[number];
+
+export const PAYMENT_CONDITION_LABELS: Record<PaymentCondition, string> = {
+  received: "Já recebi",
+  on_delivery: "Receber na entrega",
+  installments: "Parcelado",
+};
+
+export const cardTypeValues = ["debit", "credit"] as const;
+
+export type CardType = (typeof cardTypeValues)[number];
+
+export const CARD_TYPE_LABELS: Record<CardType, string> = {
+  debit: "Débito",
+  credit: "Crédito",
+};
+
+export const dueKindValues = ["scheduled", "on_delivery", "unknown"] as const;
+
+export type DueKind = (typeof dueKindValues)[number];
+
+export const DUE_KIND_LABELS: Record<DueKind, string> = {
+  scheduled: "Agendado",
+  on_delivery: "Na entrega",
+  unknown: "Data histórica indisponível",
+};
+
+export const receivableStatusValues = ["pending", "paid", "voided"] as const;
+
+export type ReceivableStatus = (typeof receivableStatusValues)[number];
+
+export const RECEIVABLE_STATUS_LABELS: Record<ReceivableStatus, string> = {
+  pending: "Pendente",
+  paid: "Paga",
+  voided: "Anulada",
 };
 
 // ---------------------------------------------------------------------------
@@ -116,29 +191,6 @@ export function addMonthsClamped(isoDate: string, monthsToAdd: number): string {
   return formatIsoDate(targetYear, targetMonth, targetDay);
 }
 
-// Dia anterior a uma data (por partes): cruza fronteira de mês/ano sem `Date`.
-const previousDayIso = (year: number, month: number, day: number): string => {
-  if (day > 1) {
-    return formatIsoDate(year, month, day - 1);
-  }
-  const previousMonthIndex = year * MONTHS_PER_YEAR + (month - 1) - 1;
-  const previousYear = Math.floor(previousMonthIndex / MONTHS_PER_YEAR);
-  const previousMonth = (previousMonthIndex % MONTHS_PER_YEAR) + 1;
-  return formatIsoDate(
-    previousYear,
-    previousMonth,
-    daysInMonth(previousYear, previousMonth),
-  );
-};
-
-// "Ontem" pela data corrente do runtime (tolerância de 1 dia sobre a data do
-// servidor — cobre o fuso da consultora sem lógica de timezone). Usa componentes
-// locais do relógio; a aritmética de subtração é por partes.
-const yesterdayIso = (): string => {
-  const now = new Date();
-  return previousDayIso(now.getFullYear(), now.getMonth() + 1, now.getDate());
-};
-
 // ---------------------------------------------------------------------------
 // Schemas de contrato
 // ---------------------------------------------------------------------------
@@ -150,7 +202,6 @@ const ITEMS_MIN = 1;
 const ITEMS_MAX = 50;
 const INSTALLMENTS_MIN = 1;
 const INSTALLMENTS_MAX = 24;
-const INSTALLMENTS_DEFAULT = 1;
 
 const CLIENT_ID_INVALID_MESSAGE = "Cliente inválida";
 const PRODUCT_ID_INVALID_MESSAGE = "Produto inválido";
@@ -164,19 +215,32 @@ const UNIT_PRICE_MAX_MESSAGE =
   "O preço unitário deve ser no máximo R$ 1.000.000,00";
 const ITEMS_INVALID_MESSAGE = "Informe ao menos um item da venda";
 const ITEMS_MAX_MESSAGE = "A venda deve ter no máximo 50 itens";
-const PAYMENT_METHOD_INVALID_MESSAGE = "Forma de pagamento inválida";
 const INSTALLMENTS_TYPE_MESSAGE = "Informe o número de parcelas (inteiro)";
 const INSTALLMENTS_MIN_MESSAGE = "O número de parcelas deve ser no mínimo 1";
 const INSTALLMENTS_MAX_MESSAGE = "O número de parcelas deve ser no máximo 24";
 const FIRST_DUE_DATE_INVALID_MESSAGE =
   "Informe o primeiro vencimento (data válida)";
 const FIRST_DUE_DATE_REQUIRED_MESSAGE =
-  "Informe o primeiro vencimento para venda a prazo";
+  "Informe o primeiro vencimento para pagamento parcelado";
 const FIRST_DUE_DATE_PAST_MESSAGE =
   "O primeiro vencimento não pode ser no passado";
 const STATUS_INVALID_MESSAGE = "Status de venda inválido";
-
-const CREDIT_PAYMENT_METHOD: PaymentMethod = "credit";
+const PAYMENT_METHOD_REQUIRED_MESSAGE = "Escolha a forma de pagamento";
+const DELIVERY_STATUS_REQUIRED_MESSAGE = "Informe a situação da entrega";
+const PAYMENT_CONDITION_REQUIRED_MESSAGE = "Escolha a condição de pagamento";
+const CARD_TYPE_REQUIRED_MESSAGE = "Escolha o tipo do cartão";
+const CARD_TYPE_FORBIDDEN_MESSAGE =
+  "Tipo de cartão só pode ser informado para pagamento com cartão";
+const INSTALLMENTS_FORBIDDEN_MESSAGE =
+  "Esta condição de pagamento permite somente 1 parcela";
+const INSTALLMENTS_REQUIRED_MESSAGE =
+  "Informe ao menos 2 parcelas para pagamento parcelado";
+const INSTALLMENTS_CONDITION_INVALID_MESSAGE =
+  "Esta forma de pagamento não permite parcelamento";
+const FIRST_DUE_DATE_FORBIDDEN_MESSAGE =
+  "O primeiro vencimento só pode ser informado para pagamento parcelado";
+export const TOTAL_CENTS_INSTALLMENTS_MESSAGE =
+  "O total da venda precisa ter ao menos R$ 0,01 por parcela";
 
 // Item do payload de criação. `unitPriceCents` opcional: ausente ⇒ o service usa
 // o preço atual do produto (snapshot). Sempre inteiro em centavos.
@@ -195,11 +259,9 @@ const createSaleItemSchema = z.object({
     .optional(),
 });
 
-// Contrato de criação de venda. `total_cents >= installments` NÃO é validado
-// aqui: o total é calculado no servidor (o cliente não o envia), então essa
-// regra é do service. `firstDueDate` só é obrigatória para `credit` — via
-// superRefine, que também recusa datas anteriores a ontem (comparação
-// lexicográfica de ISO `yyyy-mm-dd`, válida por construção do formato).
+// O total vem do catálogo travado pelo service, por isso sua regra não pertence
+// ao payload HTTP. Este schema só aceita os métodos criáveis; `credit` existe
+// exclusivamente nos contratos de leitura do histórico.
 export const createSaleSchema = z
   .object({
     clientId: z
@@ -210,42 +272,124 @@ export const createSaleSchema = z
       .array(createSaleItemSchema, { error: ITEMS_INVALID_MESSAGE })
       .min(ITEMS_MIN, ITEMS_INVALID_MESSAGE)
       .max(ITEMS_MAX, ITEMS_MAX_MESSAGE),
-    paymentMethod: z.enum(paymentMethodValues, {
-      error: PAYMENT_METHOD_INVALID_MESSAGE,
+    paymentMethod: z.enum(createPaymentMethodValues, {
+      error: PAYMENT_METHOD_REQUIRED_MESSAGE,
     }),
+    deliveryStatus: z
+      .enum(deliveryStatusValues, {
+        error: DELIVERY_STATUS_REQUIRED_MESSAGE,
+      })
+      .default("delivered"),
+    paymentCondition: z
+      .enum(paymentConditionValues, {
+        error: PAYMENT_CONDITION_REQUIRED_MESSAGE,
+      })
+      .default("received"),
+    cardType: z.enum(cardTypeValues).optional(),
     installments: z
       .number({ error: INSTALLMENTS_TYPE_MESSAGE })
       .int(INSTALLMENTS_TYPE_MESSAGE)
       .min(INSTALLMENTS_MIN, INSTALLMENTS_MIN_MESSAGE)
       .max(INSTALLMENTS_MAX, INSTALLMENTS_MAX_MESSAGE)
-      .default(INSTALLMENTS_DEFAULT),
+      .default(1),
     firstDueDate: z.iso
       .date({ error: FIRST_DUE_DATE_INVALID_MESSAGE })
       .optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.paymentMethod !== CREDIT_PAYMENT_METHOD) {
-      return;
-    }
-    if (value.firstDueDate === undefined) {
+    const isCard = value.paymentMethod === "card";
+    const isCreditCard = value.cardType === "credit";
+    const isInstallments = value.paymentCondition === "installments";
+
+    if (isCard && value.cardType === undefined) {
       ctx.addIssue({
         code: "custom",
-        path: ["firstDueDate"],
-        message: FIRST_DUE_DATE_REQUIRED_MESSAGE,
+        path: ["cardType"],
+        message: CARD_TYPE_REQUIRED_MESSAGE,
       });
+    }
+
+    if (!isCard && value.cardType !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cardType"],
+        message: CARD_TYPE_FORBIDDEN_MESSAGE,
+      });
+    }
+
+    if (isInstallments) {
+      if (value.paymentMethod === "cash" || (isCard && !isCreditCard)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["paymentCondition"],
+          message: INSTALLMENTS_CONDITION_INVALID_MESSAGE,
+        });
+      }
+      if (value.installments === 1) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["installments"],
+          message: INSTALLMENTS_REQUIRED_MESSAGE,
+        });
+      }
+      if (value.firstDueDate === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["firstDueDate"],
+          message: FIRST_DUE_DATE_REQUIRED_MESSAGE,
+        });
+      } else if (
+        value.firstDueDate < appLocalDateIso(new Date().toISOString())
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["firstDueDate"],
+          message: FIRST_DUE_DATE_PAST_MESSAGE,
+        });
+      }
       return;
     }
-    if (value.firstDueDate < yesterdayIso()) {
+
+    if ((!isCard || !isCreditCard) && value.installments !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["installments"],
+        message: INSTALLMENTS_FORBIDDEN_MESSAGE,
+      });
+    }
+    if (value.firstDueDate !== undefined) {
       ctx.addIssue({
         code: "custom",
         path: ["firstDueDate"],
-        message: FIRST_DUE_DATE_PAST_MESSAGE,
+        message: FIRST_DUE_DATE_FORBIDDEN_MESSAGE,
       });
     }
   });
 
 export type CreateSaleInput = z.input<typeof createSaleSchema>;
 export type CreateSale = z.output<typeof createSaleSchema>;
+
+// Regra autoritativa aplicada APÓS o cálculo do total pelo servidor. O schema
+// preserva o path `installments` para a API devolver 422 no campo acionável.
+export const saleTotalInstallmentsSchema = z
+  .object({
+    totalCents: z.number().int().min(0),
+    installments: z.number().int().min(INSTALLMENTS_MIN).max(INSTALLMENTS_MAX),
+  })
+  .superRefine((value, ctx) => {
+    if (value.totalCents !== 0 && value.totalCents < value.installments) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["installments"],
+        message: TOTAL_CENTS_INSTALLMENTS_MESSAGE,
+      });
+    }
+  });
+
+export const validateSaleTotalCents = (
+  totalCents: number,
+  installments: number,
+) => saleTotalInstallmentsSchema.safeParse({ totalCents, installments });
 
 // Item da venda na resposta (snapshot). `productId` nullable: produto excluído
 // ⇒ SET NULL, mas `productName` preserva o histórico legível.
@@ -259,16 +403,39 @@ export const saleItemSchema = z.object({
 
 export type SaleItem = z.infer<typeof saleItemSchema>;
 
-// Recebível na resposta. `paidAt` null = pendente; `overdue` derivado pela API
-// (`due_date < hoje && !paid_at`) com a data do servidor.
-export const receivableSchema = z.object({
-  id: z.uuid(),
-  saleId: z.uuid(),
-  amountCents: z.number().int(),
-  dueDate: z.iso.date(),
-  paidAt: z.iso.datetime().nullable(),
-  overdue: z.boolean(),
-});
+// Recebível na resposta. A API deriva `status` e `overdue` dentro do mesmo
+// snapshot de leitura; cobranças anuladas nunca têm ação de baixa/estorno.
+export const receivableSchema = z
+  .object({
+    id: z.uuid(),
+    saleId: z.uuid(),
+    amountCents: z.number().int(),
+    dueDate: z.iso.date().nullable(),
+    dueKind: z.enum(dueKindValues),
+    paidAt: z.iso.datetime().nullable(),
+    voidedAt: z.iso.datetime().nullable(),
+    status: z.enum(receivableStatusValues),
+    overdue: z.boolean(),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .superRefine((value, ctx) => {
+    const needsScheduledDate = value.dueKind === "scheduled";
+    if (needsScheduledDate && value.dueDate === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dueDate"],
+        message: "Informe a data para vencimento agendado",
+      });
+    }
+    if (!needsScheduledDate && value.dueDate !== null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["dueDate"],
+        message: "Este tipo de vencimento não possui data agendada",
+      });
+    }
+  });
 
 export type Receivable = z.infer<typeof receivableSchema>;
 
@@ -292,8 +459,21 @@ export const saleSchema = z.object({
   clientName: z.string(),
   totalCents: z.number().int(),
   paymentMethod: z.enum(paymentMethodValues),
+  paymentCondition: z.enum(paymentConditionValues),
+  cardType: z.enum(cardTypeValues).nullable(),
+  installments: z.number().int().min(INSTALLMENTS_MIN).max(INSTALLMENTS_MAX),
+  paymentPlanKnown: z.boolean(),
   status: z.enum(saleStatusValues),
+  deliveryStatus: z.enum(deliveryStatusValues),
+  paymentStatus: z.enum(paymentStatusValues),
+  paidCents: z.number().int().min(0),
+  outstandingCents: z.number().int().min(0),
   soldAt: z.iso.datetime(),
+  deliveredAt: z.iso.datetime().nullable(),
+  completedAt: z.iso.datetime().nullable(),
+  canceledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
   items: z.array(saleItemSchema),
   receivables: z.array(receivableSchema),
 });

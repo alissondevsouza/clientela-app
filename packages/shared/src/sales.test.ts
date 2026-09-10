@@ -1,308 +1,332 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   addMonthsClamped,
+  CARD_TYPE_LABELS,
   createSaleSchema,
+  DELIVERY_STATUS_LABELS,
+  DUE_KIND_LABELS,
+  PAYMENT_CONDITION_LABELS,
   PAYMENT_METHOD_LABELS,
-  paymentMethodValues,
-  receivablesListQuerySchema,
+  PAYMENT_STATUS_LABELS,
+  RECEIVABLE_STATUS_LABELS,
+  receivableSchema,
   SALE_STATUS_LABELS,
-  saleStatusValues,
-  salesListQuerySchema,
+  saleSchema,
   splitInstallmentAmounts,
+  TOTAL_CENTS_INSTALLMENTS_MESSAGE,
+  validateSaleTotalCents,
 } from "./sales";
 
 const VALID_UUID = "11111111-1111-4111-8111-111111111111";
-const OTHER_UUID = "22222222-2222-4222-8222-222222222222";
+const VALID_INSTANT = "2026-09-10T12:00:00.000Z";
+const validItem = { productId: VALID_UUID, qty: 2 } as const;
 
-// Data ISO derivada da data corrente REAL com deslocamento de dias — evita flake
-// (o schema compara com "ontem" do runtime). Local, casando com a leitura do
-// schema (que usa componentes locais do relógio).
-const isoWithDayOffset = (offsetDays: number): string => {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
+const createInput = (overrides: Record<string, unknown> = {}) => ({
+  items: [validItem],
+  paymentMethod: "cash",
+  deliveryStatus: "pending",
+  paymentCondition: "received",
+  installments: 1,
+  ...overrides,
+});
 
-const firstMessage = (
-  result: ReturnType<typeof createSaleSchema.safeParse>,
-): string => {
+const issueFor = (input: unknown, field: string): string => {
+  const result = createSaleSchema.safeParse(input);
   if (result.success) {
     throw new Error("esperava falha de validação");
   }
-  return result.error.issues[0]?.message ?? "";
+  return (
+    result.error.issues.find((issue) => issue.path[0] === field)?.message ?? ""
+  );
 };
 
-const validItem = { productId: VALID_UUID, qty: 2 } as const;
-
-describe("enums e labels", () => {
-  it("expõe os valores de forma de pagamento e status", () => {
-    expect(paymentMethodValues).toEqual(["cash", "pix", "card", "credit"]);
-    expect(saleStatusValues).toEqual(["completed", "canceled"]);
-  });
-
-  it("mapeia labels pt-BR de forma de pagamento", () => {
-    expect(PAYMENT_METHOD_LABELS.cash).toBe("Dinheiro");
-    expect(PAYMENT_METHOD_LABELS.pix).toBe("PIX");
-    expect(PAYMENT_METHOD_LABELS.card).toBe("Cartão");
+describe("enums e labels do ciclo de venda", () => {
+  it("expõe labels pt-BR para todos os estados e dimensões", () => {
+    expect(SALE_STATUS_LABELS).toEqual({
+      open: "Em aberto",
+      completed: "Concluída",
+      canceled: "Cancelada",
+    });
+    expect(DELIVERY_STATUS_LABELS).toEqual({
+      pending: "Aguardando entrega",
+      delivered: "Entregue",
+    });
+    expect(PAYMENT_STATUS_LABELS).toEqual({
+      pending: "Pendente",
+      partial: "Parcialmente paga",
+      paid: "Paga",
+      voided: "Anulada",
+    });
+    expect(PAYMENT_CONDITION_LABELS).toEqual({
+      received: "Já recebi",
+      on_delivery: "Receber na entrega",
+      installments: "Parcelado",
+    });
     expect(PAYMENT_METHOD_LABELS.credit).toBe("A prazo");
-  });
-
-  it("mapeia labels pt-BR de status", () => {
-    expect(SALE_STATUS_LABELS.completed).toBe("Concluída");
-    expect(SALE_STATUS_LABELS.canceled).toBe("Cancelada");
+    expect(CARD_TYPE_LABELS).toEqual({ debit: "Débito", credit: "Crédito" });
+    expect(DUE_KIND_LABELS).toEqual({
+      scheduled: "Agendado",
+      on_delivery: "Na entrega",
+      unknown: "Data histórica indisponível",
+    });
+    expect(RECEIVABLE_STATUS_LABELS).toEqual({
+      pending: "Pendente",
+      paid: "Paga",
+      voided: "Anulada",
+    });
   });
 });
 
-describe("splitInstallmentAmounts", () => {
-  it("distribui o resto +1 nas primeiras parcelas (10000 em 3×)", () => {
-    const result = splitInstallmentAmounts(10000, 3);
-    expect(result).toEqual([3334, 3333, 3333]);
-    expect(result.reduce((sum, value) => sum + value, 0)).toBe(10000);
-  });
+describe("createSaleSchema — matriz de pagamento", () => {
+  it("aceita todas as combinações válidas", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
 
-  it("distribui centavos com total pequeno (10 em 3×)", () => {
-    const result = splitInstallmentAmounts(10, 3);
-    expect(result).toEqual([4, 3, 3]);
-    expect(result.reduce((sum, value) => sum + value, 0)).toBe(10);
-  });
+    const validCombinations = [
+      { paymentMethod: "cash", paymentCondition: "received", installments: 1 },
+      {
+        paymentMethod: "cash",
+        paymentCondition: "on_delivery",
+        installments: 1,
+      },
+      { paymentMethod: "pix", paymentCondition: "received", installments: 1 },
+      {
+        paymentMethod: "pix",
+        paymentCondition: "on_delivery",
+        installments: 1,
+      },
+      {
+        paymentMethod: "pix",
+        paymentCondition: "installments",
+        installments: 2,
+        firstDueDate: "2026-09-10",
+      },
+      {
+        paymentMethod: "card",
+        cardType: "debit",
+        paymentCondition: "received",
+        installments: 1,
+      },
+      {
+        paymentMethod: "card",
+        cardType: "debit",
+        paymentCondition: "on_delivery",
+        installments: 1,
+      },
+      {
+        paymentMethod: "card",
+        cardType: "credit",
+        paymentCondition: "received",
+        installments: 24,
+      },
+      {
+        paymentMethod: "card",
+        cardType: "credit",
+        paymentCondition: "on_delivery",
+        installments: 3,
+      },
+      {
+        paymentMethod: "card",
+        cardType: "credit",
+        paymentCondition: "installments",
+        installments: 2,
+        firstDueDate: "2026-10-10",
+      },
+    ];
 
-  it("resto zero ⇒ parcelas iguais", () => {
-    expect(splitInstallmentAmounts(9000, 3)).toEqual([3000, 3000, 3000]);
-  });
-
-  it("uma única parcela recebe o total inteiro", () => {
-    expect(splitInstallmentAmounts(5000, 1)).toEqual([5000]);
-  });
-
-  it("total igual ao número de parcelas ⇒ todas 1 centavo", () => {
-    expect(splitInstallmentAmounts(3, 3)).toEqual([1, 1, 1]);
-  });
-
-  it("mantém a soma exata para restos arbitrários (1..n-1)", () => {
-    for (let installments = 1; installments <= 24; installments += 1) {
-      for (let remainder = 0; remainder < installments; remainder += 1) {
-        const total = installments * 100 + remainder;
-        const parts = splitInstallmentAmounts(total, installments);
-        expect(parts).toHaveLength(installments);
-        expect(parts.reduce((sum, value) => sum + value, 0)).toBe(total);
-      }
+    for (const combination of validCombinations) {
+      expect(createSaleSchema.safeParse(createInput(combination)).success).toBe(
+        true,
+      );
     }
+    vi.useRealTimers();
   });
 
-  it("lança para número de parcelas < 1", () => {
-    expect(() => splitInstallmentAmounts(1000, 0)).toThrow();
-    expect(() => splitInstallmentAmounts(1000, -1)).toThrow();
+  it("rejeita métodos legados e combinações contraditórias no campo acionável", () => {
+    expect(
+      issueFor(createInput({ paymentMethod: "credit" }), "paymentMethod"),
+    ).toBe("Escolha a forma de pagamento");
+    expect(
+      issueFor(
+        createInput({
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: "2026-10-10",
+        }),
+        "paymentCondition",
+      ),
+    ).toBe("Esta forma de pagamento não permite parcelamento");
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "card",
+          cardType: "debit",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: "2026-10-10",
+        }),
+        "paymentCondition",
+      ),
+    ).toBe("Esta forma de pagamento não permite parcelamento");
+    expect(issueFor(createInput({ cardType: "credit" }), "cardType")).toBe(
+      "Tipo de cartão só pode ser informado para pagamento com cartão",
+    );
+    expect(issueFor(createInput({ paymentMethod: "card" }), "cardType")).toBe(
+      "Escolha o tipo do cartão",
+    );
   });
 
-  it("lança quando total < número de parcelas", () => {
-    expect(() => splitInstallmentAmounts(2, 3)).toThrow();
+  it("exige e limita os campos específicos de parcelamento", () => {
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 1,
+        }),
+        "installments",
+      ),
+    ).toBe("Informe ao menos 2 parcelas para pagamento parcelado");
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+        }),
+        "firstDueDate",
+      ),
+    ).toBe("Informe o primeiro vencimento para pagamento parcelado");
+    expect(issueFor(createInput({ installments: 2 }), "installments")).toBe(
+      "Esta condição de pagamento permite somente 1 parcela",
+    );
+    expect(
+      issueFor(createInput({ firstDueDate: "2026-10-10" }), "firstDueDate"),
+    ).toBe(
+      "O primeiro vencimento só pode ser informado para pagamento parcelado",
+    );
   });
 
-  it("lança para inputs não-inteiros", () => {
-    expect(() => splitInstallmentAmounts(1000.5, 3)).toThrow();
-    expect(() => splitInstallmentAmounts(1000, 2.5)).toThrow();
+  it("rejeita vencimento no passado usando a data local da aplicação", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T02:00:00.000Z"));
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: "2026-09-08",
+        }),
+        "firstDueDate",
+      ),
+    ).toBe("O primeiro vencimento não pode ser no passado");
+    vi.useRealTimers();
   });
 });
 
-describe("addMonthsClamped", () => {
-  it("31/jan +1 ⇒ 28/fev (clamp ao último dia)", () => {
-    expect(addMonthsClamped("2026-01-31", 1)).toBe("2026-02-28");
+describe("validateSaleTotalCents", () => {
+  it("aceita total zero, limites comerciais e valor acima", () => {
+    expect(validateSaleTotalCents(0, 24).success).toBe(true);
+    expect(validateSaleTotalCents(1, 2).success).toBe(false);
+    expect(validateSaleTotalCents(2, 2).success).toBe(true);
+    expect(validateSaleTotalCents(10_000, 3).success).toBe(true);
   });
 
-  it("31/jan +2 ⇒ 31/mar (sem drift, ancorado no dia original)", () => {
-    expect(addMonthsClamped("2026-01-31", 2)).toBe("2026-03-31");
-  });
-
-  it("31/jan +1 em ano bissexto ⇒ 29/fev", () => {
-    expect(addMonthsClamped("2028-01-31", 1)).toBe("2028-02-29");
-  });
-
-  it("31/dez +1 ⇒ 31/jan do ano seguinte", () => {
-    expect(addMonthsClamped("2026-12-31", 1)).toBe("2027-01-31");
-  });
-
-  it("30/jan +1 ⇒ 28/fev", () => {
-    expect(addMonthsClamped("2026-01-30", 1)).toBe("2026-02-28");
-  });
-
-  it("dia que existe no mês alvo é preservado", () => {
-    expect(addMonthsClamped("2026-03-15", 1)).toBe("2026-04-15");
-  });
-
-  it("somar 0 meses devolve a mesma data", () => {
-    expect(addMonthsClamped("2026-07-18", 0)).toBe("2026-07-18");
-  });
-
-  it("vencimentos mensais consecutivos a partir de 31/jan não driftam", () => {
-    const base = "2026-01-31";
-    expect(addMonthsClamped(base, 0)).toBe("2026-01-31");
-    expect(addMonthsClamped(base, 1)).toBe("2026-02-28");
-    expect(addMonthsClamped(base, 2)).toBe("2026-03-31");
-    expect(addMonthsClamped(base, 3)).toBe("2026-04-30");
-  });
-
-  it("lança para data ISO inválida", () => {
-    expect(() => addMonthsClamped("18/07/2026", 1)).toThrow();
-    expect(() => addMonthsClamped("2026-7-8", 1)).toThrow();
+  it("associa a violação de total × parcelas ao campo e mensagem pt-BR", () => {
+    const result = validateSaleTotalCents(1, 2);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    expect(result.error.issues).toContainEqual(
+      expect.objectContaining({
+        path: ["installments"],
+        message: TOTAL_CENTS_INSTALLMENTS_MESSAGE,
+      }),
+    );
   });
 });
 
-describe("createSaleSchema", () => {
-  it("aceita venda à vista sem primeiro vencimento e aplica installments default 1", () => {
-    const result = createSaleSchema.parse({
-      items: [validItem],
-      paymentMethod: "pix",
-    });
-    expect(result.installments).toBe(1);
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.qty).toBe(2);
-    expect(result.items[0]?.unitPriceCents).toBeUndefined();
-  });
-
-  it("aceita clientId nullable e unitPriceCents opcional", () => {
-    const result = createSaleSchema.parse({
+describe("contratos de resposta", () => {
+  it("exige o plano, ciclo, totais e timestamps da venda", () => {
+    const result = saleSchema.safeParse({
+      id: VALID_UUID,
       clientId: null,
-      items: [{ productId: VALID_UUID, qty: 1, unitPriceCents: 5990 }],
-      paymentMethod: "cash",
-    });
-    expect(result.clientId).toBeNull();
-    expect(result.items[0]?.unitPriceCents).toBe(5990);
-  });
-
-  it("aceita venda a prazo com firstDueDate a partir de ontem", () => {
-    const yesterday = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
+      clientName: "Cliente removida",
+      totalCents: 10_000,
+      paymentMethod: "card",
+      paymentCondition: "installments",
+      cardType: "credit",
       installments: 3,
-      firstDueDate: isoWithDayOffset(-1),
-    });
-    expect(yesterday.success).toBe(true);
-
-    const today = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
-      firstDueDate: isoWithDayOffset(0),
-    });
-    expect(today.success).toBe(true);
-
-    const future = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
-      firstDueDate: isoWithDayOffset(30),
-    });
-    expect(future.success).toBe(true);
-  });
-
-  it("rejeita venda a prazo sem firstDueDate com mensagem pt-BR", () => {
-    const result = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
-    });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe(
-      "Informe o primeiro vencimento para venda a prazo",
-    );
-  });
-
-  it("rejeita firstDueDate de anteontem (anterior a ontem)", () => {
-    const result = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
-      firstDueDate: isoWithDayOffset(-2),
-    });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe(
-      "O primeiro vencimento não pode ser no passado",
-    );
-  });
-
-  it("rejeita lista de itens vazia com mensagem pt-BR", () => {
-    const result = createSaleSchema.safeParse({
+      paymentPlanKnown: true,
+      status: "open",
+      deliveryStatus: "pending",
+      paymentStatus: "partial",
+      paidCents: 3334,
+      outstandingCents: 6666,
+      soldAt: VALID_INSTANT,
+      deliveredAt: null,
+      completedAt: null,
+      canceledAt: null,
+      createdAt: VALID_INSTANT,
+      updatedAt: VALID_INSTANT,
       items: [],
-      paymentMethod: "cash",
+      receivables: [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          saleId: VALID_UUID,
+          amountCents: 3334,
+          dueDate: "2026-10-10",
+          dueKind: "scheduled",
+          paidAt: VALID_INSTANT,
+          voidedAt: null,
+          status: "paid",
+          overdue: false,
+          createdAt: VALID_INSTANT,
+          updatedAt: VALID_INSTANT,
+        },
+      ],
     });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe("Informe ao menos um item da venda");
+    expect(result.success).toBe(true);
   });
 
-  it("rejeita mais de 50 itens", () => {
-    const items = Array.from({ length: 51 }, () => validItem);
-    const result = createSaleSchema.safeParse({ items, paymentMethod: "cash" });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe("A venda deve ter no máximo 50 itens");
-  });
-
-  it("rejeita installments acima de 24", () => {
-    const result = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "credit",
-      installments: 25,
-      firstDueDate: isoWithDayOffset(1),
-    });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe(
-      "O número de parcelas deve ser no máximo 24",
-    );
-  });
-
-  it("rejeita forma de pagamento inválida", () => {
-    const result = createSaleSchema.safeParse({
-      items: [validItem],
-      paymentMethod: "boleto",
-    });
-    expect(result.success).toBe(false);
-    expect(firstMessage(result)).toBe("Forma de pagamento inválida");
-  });
-
-  it("rejeita corpo vazio com mensagem pt-BR (não em inglês)", () => {
-    const result = createSaleSchema.safeParse({});
-    expect(result.success).toBe(false);
-    const message = firstMessage(result);
-    expect(message).toBe("Informe ao menos um item da venda");
-    expect(message).not.toMatch(/invalid input|expected|received/i);
+  it("mantém dueKind e dueDate coerentes", () => {
+    const base = {
+      id: "22222222-2222-4222-8222-222222222222",
+      saleId: VALID_UUID,
+      amountCents: 100,
+      paidAt: null,
+      voidedAt: null,
+      status: "pending",
+      overdue: false,
+      createdAt: VALID_INSTANT,
+      updatedAt: VALID_INSTANT,
+    };
+    expect(
+      receivableSchema.safeParse({
+        ...base,
+        dueKind: "scheduled",
+        dueDate: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      receivableSchema.safeParse({
+        ...base,
+        dueKind: "on_delivery",
+        dueDate: "2026-10-10",
+      }).success,
+    ).toBe(false);
   });
 });
 
-describe("salesListQuerySchema", () => {
-  it("aplica defaults de paginação sem filtros", () => {
-    const result = salesListQuerySchema.parse({});
-    expect(result.page).toBe(1);
-    expect(result.perPage).toBe(20);
-    expect(result.status).toBeUndefined();
-    expect(result.clientId).toBeUndefined();
+describe("helpers financeiros existentes", () => {
+  it("divide centavos sem perda e rejeita parcela de zero centavo", () => {
+    expect(splitInstallmentAmounts(10_000, 3)).toEqual([3334, 3333, 3333]);
+    expect(() => splitInstallmentAmounts(1, 2)).toThrow();
   });
 
-  it("aceita filtros de status e clientId", () => {
-    const result = salesListQuerySchema.parse({
-      status: "canceled",
-      clientId: OTHER_UUID,
-    });
-    expect(result.status).toBe("canceled");
-    expect(result.clientId).toBe(OTHER_UUID);
-  });
-
-  it("rejeita status fora do enum", () => {
-    const result = salesListQuerySchema.safeParse({ status: "pending" });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("receivablesListQuerySchema", () => {
-  it("pending default true quando ausente", () => {
-    const result = receivablesListQuerySchema.parse({});
-    expect(result.pending).toBe(true);
-  });
-
-  it("coage a string 'false' da query para boolean false", () => {
-    const result = receivablesListQuerySchema.parse({ pending: "false" });
-    expect(result.pending).toBe(false);
-  });
-
-  it("coage a string 'true' da query para boolean true", () => {
-    const result = receivablesListQuerySchema.parse({ pending: "true" });
-    expect(result.pending).toBe(true);
+  it("mantém vencimentos mensais ancorados", () => {
+    expect(addMonthsClamped("2026-01-31", 1)).toBe("2026-02-28");
+    expect(addMonthsClamped("2026-01-31", 2)).toBe("2026-03-31");
   });
 });

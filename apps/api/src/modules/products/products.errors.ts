@@ -10,3 +10,12 @@ export class ProductNotFoundError extends Error {
     this.name = "ProductNotFoundError";
   }
 }
+
+export class ProductReservedError extends Error {
+  constructor() {
+    super(
+      "Não é possível excluir: este produto está reservado em uma venda em aberto.",
+    );
+    this.name = "ProductReservedError";
+  }
+}

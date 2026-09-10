@@ -119,7 +119,6 @@ const noopProductsRepository: ProductsRepositoryPort = {
 // Sales em memória: este arquivo só exercita `/leads` e `/health` — nenhuma rota
 // autenticada de sales é chamada. O fake só satisfaz o `createApp`.
 const noopSalesRepository: SalesRepositoryPort = {
-  findProductsByIds: async () => [],
   createSale: async () => {
     throw new Error("sales não é exercitado neste teste");
   },

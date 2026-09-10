@@ -87,6 +87,10 @@ export type CancelSaleResult =
   | { ok: true }
   | { ok: false; notFound: boolean; conflict: boolean; message: string };
 
+export type DeliverSaleResult =
+  | { ok: true }
+  | { ok: false; notFound: boolean; conflict: boolean; message: string };
+
 export type ListReceivablesResult =
   | {
       ok: true;
@@ -346,6 +350,51 @@ export const cancelSale = async (
     };
   }
 
+  return { ok: true };
+};
+
+export const deliverSale = async (
+  id: string,
+  { fetchImpl, apiUrl, token }: SalesApiDeps,
+): Promise<DeliverSaleResult> => {
+  let response: Response;
+  try {
+    response = await fetchImpl(joinUrl(apiUrl, salePath(id, "/deliver")), {
+      method: "POST",
+      headers: authHeaders(token),
+    });
+  } catch {
+    return {
+      ok: false,
+      notFound: false,
+      conflict: false,
+      message: GENERIC_ERROR_MESSAGE,
+    };
+  }
+  if (response.status === HTTP_NOT_FOUND) {
+    return {
+      ok: false,
+      notFound: true,
+      conflict: false,
+      message: SALE_NOT_FOUND_MESSAGE,
+    };
+  }
+  if (response.status === HTTP_CONFLICT) {
+    return {
+      ok: false,
+      notFound: false,
+      conflict: true,
+      message: await extractErrorMessage(response),
+    };
+  }
+  if (response.status !== HTTP_OK) {
+    return {
+      ok: false,
+      notFound: false,
+      conflict: false,
+      message: await extractErrorMessage(response),
+    };
+  }
   return { ok: true };
 };
 

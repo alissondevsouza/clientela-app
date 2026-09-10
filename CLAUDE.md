@@ -1,4 +1,6 @@
-# Clientela App — instruções para o Claude
+# Clientela App — instruções compartilhadas para agentes
+
+Este arquivo e `.claude/rules/` são a fonte canônica de regras do projeto. Claude Code os consome diretamente; o Codex entra por `AGENTS.md` e reutiliza estas mesmas regras por referência.
 
 Idioma do projeto: **pt-BR** (documentação, commits, comunicação, textos de UI). Código e nomes de arquivos em **inglês**.
 
@@ -29,7 +31,7 @@ Artefatos de trabalho em `specs/{slug}/` a partir de `specs/_templates/` (format
 - `.claude/rules/typescript/` — `core.md` (tipagem/estilo), `api.md` (Elysia, camadas), `web.md` (Next.js, mobile-first), `database.md` (Drizzle/Postgres), `testing.md` (Vitest/Testcontainers).
 - `.claude/rules/security.md` — segredos, auth, LGPD.
 
-Skills de referência de biblioteca em `.claude/skills/` (elysia, drizzle-postgres, zod, vitest, react, shadcn-ui, tailwindcss, typescript-advanced) — consultar ao trabalhar no módulo correspondente.
+Skills de referência de biblioteca em `.claude/skills/` (elysia, drizzle-postgres, zod, vitest, react, shadcn-ui, tailwindcss, typescript-advanced) — consultar ao trabalhar no módulo correspondente. No Codex, elas aparecem em `.agents/skills/` por symlink, sem duplicação.
 
 ## Comandos (raiz do monorepo)
 

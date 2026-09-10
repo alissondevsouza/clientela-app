@@ -1,0 +1,18 @@
+{
+  "description": "Guardrails locais do harness Clientela App.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/git-human-only.py\"",
+            "timeout": 10,
+            "statusMessage": "Verificando guardrail de Git"
+          }
+        ]
+      }
+    ]
+  }
+}

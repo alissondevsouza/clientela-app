@@ -2,11 +2,15 @@ import type { Product } from "@clientela/shared";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatBRL } from "@/lib/format";
+import { formatPercentage } from "@/lib/product-pricing";
 import { cn } from "@/lib/utils";
 
 const BRAND_CODE_LABEL = "Código";
 const PRICE_LABEL = "Preço";
+const COST_LABEL = "Custo";
+const DISCOUNT_LABEL = "Desconto";
 const STOCK_LABEL = "Estoque";
+const AVAILABLE_LABEL = "disponíveis";
 const LOW_STOCK_TEXT = "Estoque baixo";
 
 const productDetailHref = (id: string): string => `/crm/products/${id}`;
@@ -26,9 +30,8 @@ function LowStockBadge() {
   );
 }
 
-// Card da listagem de produtos (RSC): nome como link para o detalhe, código
-// Mary Kay quando houver, preço formatado (R$), quantidade em estoque e badge
-// textual "Estoque baixo" quando `lowStock`. Sem interatividade → Server Component.
+// Card da listagem de produtos (RSC): mantém toda a apresentação financeira em
+// helpers puros de `lib/`, sem importar comportamento do Client Component do form.
 export function ProductCard({ product }: { product: Product }) {
   return (
     <Card size="sm">
@@ -56,9 +59,28 @@ export function ProductCard({ product }: { product: Product }) {
           <span className="font-medium text-foreground">{PRICE_LABEL}:</span>{" "}
           {formatBRL(product.priceCents)}
         </p>
+        <p className="flex flex-wrap gap-x-2 text-sm text-muted-foreground">
+          <span>
+            <span className="font-medium text-foreground">{COST_LABEL}:</span>{" "}
+            {formatBRL(product.costCents)}
+          </span>
+          {product.purchaseDiscountBps !== null ? (
+            <span>
+              <span className="font-medium text-foreground">
+                {DISCOUNT_LABEL}:
+              </span>{" "}
+              {formatPercentage(product.purchaseDiscountBps)}
+            </span>
+          ) : null}
+        </p>
         <p className="text-sm text-muted-foreground">
           <span className="font-medium text-foreground">{STOCK_LABEL}:</span>{" "}
           {product.stockQty}
+          {/* Com reserva, o número físico sozinho engana (e contradiz o selo de
+              estoque baixo, que já usa a disponibilidade). */}
+          {product.reservedQty > 0
+            ? ` (${product.availableQty} ${AVAILABLE_LABEL})`
+            : null}
         </p>
       </CardContent>
     </Card>

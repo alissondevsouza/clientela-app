@@ -1,0 +1,3 @@
+ALTER TABLE "products" ADD COLUMN "purchase_discount_bps" integer;--> statement-breakpoint
+ALTER TABLE "products" ADD CONSTRAINT "products_purchase_discount_bps_range_check" CHECK ("products"."purchase_discount_bps" >= 0 AND "products"."purchase_discount_bps" <= 10000);--> statement-breakpoint
+ALTER TABLE "products" ADD CONSTRAINT "products_discount_cost_consistency_check" CHECK ("products"."purchase_discount_bps" IS NULL OR "products"."cost_cents" = (("products"."price_cents"::bigint * (10000 - "products"."purchase_discount_bps") + 5000) / 10000));

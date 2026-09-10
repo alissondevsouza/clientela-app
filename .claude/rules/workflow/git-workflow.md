@@ -1,6 +1,6 @@
 # Rule: Git
 
-> Política definida no [ADR-0006](../../../project-memory/decisions/0006-git-human-only.md): commits são assinados com GPG (chave do humano) — **todo git de escrita é exclusivo do humano**. Guardrail mecânico em `.claude/settings.json` (deny + hook PreToolUse).
+> Política definida no [ADR-0006](../../../project-memory/decisions/0006-git-human-only.md): commits são assinados com GPG (chave do humano) — **todo git de escrita é exclusivo do humano**. Guardrails mecânicos em `.claude/settings.json` (Claude Code) e `.codex/rules/` + `.codex/hooks.json` (Codex).
 
 ## O que agentes PODEM fazer
 

@@ -96,7 +96,6 @@ const noopProductsRepository: ProductsRepositoryPort = {
 // Sales em memória: o único caso deste arquivo é o `/health` (rota pública), que
 // não toca sales — o fake só satisfaz o contrato do `createApp`.
 const noopSalesRepository: SalesRepositoryPort = {
-  findProductsByIds: async () => [],
   createSale: async () => {
     throw new Error("sales não é exercitado neste teste");
   },

@@ -335,7 +335,7 @@ O que acontece (modelo pull via GHCR — ADR-0011): o **GitHub Actions** dispara
 
 1. **`ci`** — reusa o `ci.yml` (lint + typecheck + testes com Postgres real). Nada segue sem ele verde.
 2. **`build-push`** — no runner: valida as Variables de build (5.6), builda as 3 imagens (`clientela-web`, `-api`, `-migrate`) e publica no **GHCR** com duas tags: `:sha-<curto>` (a usada no deploy) e `:latest` (informativa).
-3. **`deploy`** — na VPS, via `scripts/deploy.sh`: sincroniza só a infra → login no GHCR → **pull** da tag `sha-<curto>` → migração → `up -d` → grava `.image-tag` → prune → curl.
+3. **`deploy`** — na VPS, via `scripts/deploy.sh`: sincroniza só a infra → login no GHCR → **pull** da tag `sha-<curto>` → para `api`/`web` → confirma writers parados → snapshot → migração → `up -d` → smoke → grava `.image-tag` → prune.
 
 **Re-deploy manual** (sem mudar código — ex.: reprocessar após corrigir um secret/Variable): aba **Actions** → workflow **Deploy** → botão **Run workflow** → branch `main` → *Run workflow*.
 
@@ -349,9 +349,9 @@ O que o job `deploy` executa na VPS (o `scripts/deploy.sh`, falhando cedo com me
 2. Confere que `/opt/clientela/.env` existe e faz a **transição idempotente** (remove código-fonte de deploys antigos, se houver).
 3. **Login no GHCR** com o token efêmero do run (via stdin; logout garantido no fim).
 4. **Pull** das 3 imagens na tag `sha-<curto>` exata (`docker compose --profile tools pull`) — nada é buildado na VPS.
-5. **Migração do banco** (`docker compose run --rm migrate`, sem `--build`) — cria/atualiza a tabela `leads`; idempotente.
-6. **Sobe tudo** (`docker compose up -d`), grava a tag em `.image-tag` e remove imagens antigas (`prune -af`).
-7. **Verificação**: curl no domínio.
+5. Para **`api` e `web`**, confirma que não há writer da aplicação e só então cria o snapshot pré-migração.
+6. **Migração do banco** (`docker compose run --rm migrate`, sem `--build`).
+7. **Sobe tudo** na nova tag, faz smoke obrigatório da landing e do CRM, grava a tag em `.image-tag` e remove imagens antigas (`prune -af`).
 
 > **PRIMEIRO RUN**: fique de olho na aba **Actions** no primeiro push. Se o job `deploy` falhar logo no SSH, quase sempre é secret errado; se o pull vier `denied`, é permissão/pacote (veja "Problemas comuns"). Erros de build agora aparecem no job **`build-push`**, não mais na VPS.
 
@@ -457,8 +457,49 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 
 > Após **reboot** da VPS os containers voltam sozinhos (restart policy `unless-stopped`) — sem `pull` (as imagens já estão locais). Só use o `up` manual acima se precisar recriar um container (ex.: depois de um `down`); ele lê a tag correta de `.image-tag`.
 
-> 🛟 **Snapshot automático pré-deploy (ADR-0019):** desde o INF-07, **todo deploy grava um dump em `~/backups/predeploy-<tag>-<UTC>.sql.gz` antes de rodar a migração**, mantendo os 5 mais recentes. É **fail-closed**: se o dump falhar (disco cheio, por exemplo), o deploy aborta **antes** de tocar o schema — nesse caso, libere espaço na VPS (`df -h`, `docker image prune -af`) e rode o deploy de novo. O passo sobe o `postgres` e espera ficar `healthy` antes de dumpar — numa VPS nova o dump sai praticamente vazio, o que é correto (não há dado a preservar).
+> 🛟 **Cutover fail-closed (CRM-12):** depois do pull, o deploy para `api` e `web`, confirma que não restou writer da aplicação e só então grava o dump em `~/backups/predeploy-<tag>-<UTC>.sql.gz`, mantendo os 5 mais recentes. O caminho é gravado em `/opt/clientela/.predeploy-snapshot-path`. Há indisponibilidade curta neste intervalo.
 >
+> Se o dump falhar, o schema ainda não foi tocado: o script religa os containers anteriores e aborta; libere espaço (`df -h`, `docker image prune -af`) e tente novamente. Se a migração, subida ou smoke falhar **depois** de iniciada a migração, `api` e `web` permanecem parados. Não reinicie automaticamente a versão anterior contra um schema possivelmente incompatível: escolha um forward-fix ou, com writers parados e confirmação humana, restaure manualmente o snapshot. O passo sobe o `postgres` e espera ficar `healthy` antes de dumpar — numa VPS nova o dump sai praticamente vazio, o que é correto.
+>
+### Ensaio da migração antes de um deploy com backfill (obrigatório na CRM-12)
+
+Migração que **reescreve dados existentes** (a `0012` do ciclo de venda é a primeira) roda com auditoria *fail-closed*: qualquer anomalia no histórico interrompe a migração — e, como o cutover já parou `api`/`web`, o site fica fora do ar até intervenção humana. O ensaio abaixo antecipa isso em minutos, num Postgres descartável, **sem tocar em produção**:
+
+```bash
+# 1. Dump da produção para a sua máquina (só leitura na VPS)
+ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec -T postgres sh -c \
+  'pg_dump -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" | gzip -c > /tmp/prod-rehearsal.sql.gz
+
+# 2. Postgres descartável na MESMA versão da produção
+docker run --rm -d --name clientela-rehearsal \
+  -e POSTGRES_PASSWORD=rehearsal -e POSTGRES_DB=clientela -p 55432:5432 postgres:18-alpine
+sleep 6
+# O dump traz `ALTER ... OWNER TO clientela`: sem o role, o restore enche a tela
+# de `role "clientela" does not exist` (inofensivo, mas esconde erro de verdade).
+docker exec clientela-rehearsal psql -q -U postgres -d postgres \
+  -c 'DROP DATABASE clientela' -c 'CREATE ROLE clientela LOGIN' \
+  -c 'CREATE DATABASE clientela OWNER clientela'
+gunzip -c /tmp/prod-rehearsal.sql.gz | docker exec -i clientela-rehearsal psql -q -U postgres -d clientela
+
+# 3. Aplica as migrações pendentes exatamente como o job `migrate` faria
+DATABASE_URL=postgres://postgres:rehearsal@localhost:55432/clientela \
+  bun --cwd apps/api run db:migrate:prod   # :prod = não carrega o .env local
+
+# 4. Limpeza (e apague o dump: ele contém dados pessoais — LGPD)
+docker rm -f clientela-rehearsal && rm -f /tmp/prod-rehearsal.sql.gz
+```
+
+Confira o resultado antes de concluir (soma preservada e classificação do histórico):
+
+```bash
+docker exec clientela-rehearsal psql -U postgres -d clientela \
+  -c "select status, payment_method, payment_condition, count(*) from sales group by 1,2,3" \
+  -c "select 'soma cobranças ativas = soma vendas ativas? ' || ((select coalesce(sum(amount_cents),0) from receivables r join sales s on s.id=r.sale_id where s.status<>'canceled' and r.voided_at is null) = (select coalesce(sum(total_cents),0) from sales where status<>'canceled'))::text" \
+  -c "select to_char(completed_at,'MM/YYYY') mes, count(*), sum(total_cents) from sales where status='completed' group by 1 order by 1"
+```
+
+Passo 3 verde ⇒ pode deployar. Passo 3 vermelho ⇒ a mensagem `CRM-12 backfill: ...` diz qual invariante o histórico viola; reconcilie os dados **antes** do deploy, nunca afrouxando a auditoria.
+
 > ⚠️ **Isso não é backup**: o snapshot mora na mesma VPS que o banco — disco morre, os dois morrem juntos. Ele protege contra *deploy/migração ruim*, não contra perder a máquina. O backup externo é o **LP-13** e ainda não existe. Até lá, rode o `pg_dump` manual acima e **traga o arquivo para fora da VPS** sempre que houver dado novo importante.
 
 ### Analisar dados com DBeaver (túnel SSH)

@@ -1,0 +1,6 @@
+# Configuração local do projeto. O Codex só carrega esta camada quando o
+# repositório está marcado como confiável.
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4

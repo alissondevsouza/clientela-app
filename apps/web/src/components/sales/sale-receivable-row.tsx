@@ -101,7 +101,12 @@ export function SaleReceivableRow({
             {formatBRL(receivable.amountCents)}
           </p>
           <p className="text-sm text-muted-foreground">
-            {DUE_DATE_LABEL}: {formatDateBr(receivable.dueDate)}
+            {DUE_DATE_LABEL}:{" "}
+            {receivable.dueDate
+              ? formatDateBr(receivable.dueDate)
+              : receivable.dueKind === "on_delivery"
+                ? "Na entrega"
+                : "Data histórica indisponível"}
           </p>
         </div>
         <span

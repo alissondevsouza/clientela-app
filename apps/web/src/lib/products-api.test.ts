@@ -25,12 +25,21 @@ const sampleProduct: Product = {
   name: "Batom Matte Vermelho",
   brandCode: "MK-1234",
   costCents: 3550,
+  purchaseDiscountBps: null,
   priceCents: 5990,
   stockQty: 12,
+  reservedQty: 0,
+  availableQty: 12,
   lowStockThreshold: 3,
   lowStock: false,
   createdAt: "2026-07-17T12:00:00.000Z",
   updatedAt: "2026-07-17T12:00:00.000Z",
+};
+
+const discountedProduct: Product = {
+  ...sampleProduct,
+  costCents: 3894,
+  purchaseDiscountBps: 3500,
 };
 
 const sampleSummary: ProductsSummary = {
@@ -204,6 +213,28 @@ describe("getProduct", () => {
     expect(calls[0]?.url).toBe(`http://localhost:3001/products/${PRODUCT_ID}`);
   });
 
+  it("preserva custo calculado e desconto de compra na resposta", async () => {
+    const { fetchImpl } = stubFetch(
+      () => new Response(JSON.stringify(discountedProduct), { status: 200 }),
+    );
+
+    const result = await getProduct(PRODUCT_ID, depsWith(fetchImpl));
+
+    expect(result).toEqual({ ok: true, product: discountedProduct });
+  });
+
+  it("rejeita resposta sem a forma de custo", async () => {
+    const { purchaseDiscountBps: _purchaseDiscountBps, ...legacyProduct } =
+      sampleProduct;
+    const { fetchImpl } = stubFetch(
+      () => new Response(JSON.stringify(legacyProduct), { status: 200 }),
+    );
+
+    const result = await getProduct(PRODUCT_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+  });
+
   it("marca notFound em 404", async () => {
     const { fetchImpl } = stubFetch(
       () =>
@@ -296,6 +327,30 @@ describe("createProduct", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("envia desconto de compra sem custo calculado pelo navegador", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(JSON.stringify(discountedProduct), { status: 201 }),
+    );
+
+    const result = await createProduct(
+      {
+        name: "Base Líquida Bege",
+        purchaseDiscountBps: 3500,
+        priceCents: 5990,
+      },
+      depsWith(fetchImpl),
+    );
+
+    expect(result).toEqual({ ok: true, product: discountedProduct });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      name: "Base Líquida Bege",
+      purchaseDiscountBps: 3500,
+      priceCents: 5990,
+      stockQty: 0,
+      lowStockThreshold: 1,
+    });
+  });
+
   it("mapeia erro da API para mensagem pt-BR do envelope", async () => {
     const { fetchImpl } = stubFetch(
       () =>
@@ -342,6 +397,23 @@ describe("updateProduct", () => {
 
     expect(result.ok).toBe(false);
     expect(calls).toHaveLength(0);
+  });
+
+  it("envia alteração de desconto sem custo calculado pelo navegador", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(JSON.stringify(discountedProduct), { status: 200 }),
+    );
+
+    const result = await updateProduct(
+      PRODUCT_ID,
+      { purchaseDiscountBps: 3500 },
+      depsWith(fetchImpl),
+    );
+
+    expect(result).toEqual({ ok: true, product: discountedProduct });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      purchaseDiscountBps: 3500,
+    });
   });
 
   it("mapeia erro da API para mensagem pt-BR do envelope", async () => {

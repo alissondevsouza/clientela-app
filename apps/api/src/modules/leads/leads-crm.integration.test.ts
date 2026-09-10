@@ -485,6 +485,7 @@ describe("leads CRM (integração)", () => {
     clientId: string | null;
     clientName: string;
   }): Promise<string> => {
+    const timestamp = new Date();
     const [row] = await ctx.db
       .insert(sales)
       .values({
@@ -493,7 +494,13 @@ describe("leads CRM (integração)", () => {
         clientName: values.clientName,
         totalCents: 10000,
         paymentMethod: "pix",
+        paymentCondition: "received",
         status: "completed",
+        soldAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deliveredAt: timestamp,
+        completedAt: timestamp,
       })
       .returning({ id: sales.id });
     if (!row) {

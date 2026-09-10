@@ -8,6 +8,7 @@
   "scripts": {
     "lint": "biome check .",
     "format": "biome format --write .",
+    "harness:check": "bash .codex/scripts/check-harness.sh",
     "typecheck": "bun run --filter='*' typecheck",
     "test": "vitest run",
     "test:watch": "vitest"
