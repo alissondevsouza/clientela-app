@@ -266,7 +266,7 @@ describe("appointments — ciclo de vida e vínculo de venda (integração)", ()
     clientName?: string;
     totalCents?: number;
     paymentMethod?: "cash" | "pix" | "card" | "credit";
-    status?: "completed" | "canceled";
+    status?: "open" | "completed" | "canceled";
   };
 
   // Semeadura direta de venda (o comportamento sob teste é o vínculo
@@ -874,6 +874,60 @@ describe("appointments — ciclo de vida e vínculo de venda (integração)", ()
       const body = appointmentSchema.parse(await response.json());
       expect(body.saleId).toBe(saleId);
       expect(body.saleTotalCents).toBe(15_000);
+    });
+
+    it("vincular venda ABERTA ⇒ 200 (CRM-12: o ciclo começa em aberto)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const clientId = await seedClient(consultantId, {
+        name: "Bruna",
+        whatsapp: "11933334444",
+      });
+      // Encomenda combinada no compromisso: a venda existe, ainda não foi
+      // entregue nem paga. Exigir `completed` deixaria justamente esse caso —
+      // o mais comum na agenda — sem vínculo possível.
+      const saleId = await seedSale(consultantId, {
+        clientId,
+        totalCents: 20_000,
+        status: "open",
+      });
+      const appt = await createAppointmentOk(
+        app,
+        appointmentBody({ clientId }),
+        token,
+      );
+
+      const response = await putAppointmentSale(
+        app,
+        appt.id,
+        { saleId },
+        token,
+      );
+      expect(response.status).toBe(HTTP_OK);
+      const body = appointmentSchema.parse(await response.json());
+      expect(body.saleId).toBe(saleId);
+      expect(body.saleTotalCents).toBe(20_000);
+    });
+
+    it("vincular venda CANCELADA ⇒ 422 (mesma mensagem genérica)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const saleId = await seedSale(consultantId, { status: "canceled" });
+      const appt = await createAppointmentOk(app, appointmentBody(), token);
+
+      const response = await putAppointmentSale(
+        app,
+        appt.id,
+        { saleId },
+        token,
+      );
+      expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
     });
 
     it("venda de outra consultora ⇒ 422 com a MESMA mensagem genérica de um id inexistente", async () => {

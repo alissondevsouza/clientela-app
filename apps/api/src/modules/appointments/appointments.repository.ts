@@ -4,6 +4,7 @@ import type {
   AppointmentListItem,
   AppointmentStatus,
   CreateAppointment,
+  SaleStatus,
   UpdateAppointment,
 } from "@clientela/shared";
 import {
@@ -48,7 +49,10 @@ const SCHEDULED_STATUS: AppointmentStatus = "scheduled";
 const DONE_STATUS: AppointmentStatus = "done";
 const NO_SHOW_STATUS: AppointmentStatus = "no_show";
 const CANCELED_STATUS: AppointmentStatus = "canceled";
-const COMPLETED_SALE_STATUS = "completed";
+// Vínculo da agenda aceita venda ATIVA (RF-13 da CRM-12): `open` ou
+// `completed`. Cancelada nunca é vinculável; uma venda já vinculada que depois
+// é cancelada preserva o vínculo histórico.
+const LINKABLE_SALE_STATUSES: SaleStatus[] = ["open", "completed"];
 
 const CONFLICTS_LIMIT = 20;
 
@@ -202,8 +206,8 @@ const loadAppointment = async (
   return toAppointment(row);
 };
 
-// Sale válida para vínculo (RF-10): existe, é da consultora e está
-// `completed`. Consultada ANTES de gravar a FK — nunca deixa uma violação de
+// Sale válida para vínculo (RF-10): existe, é da consultora e está ativa
+// (`open` ou `completed`). Consultada ANTES de gravar a FK — nunca deixa uma violação de
 // FK crua virar 500 (ponto de rigor #3). Aceita `db`/`tx` para rodar dentro
 // da mesma transação da escrita (RF-08/RF-08.1).
 const findLinkableSale = async (
@@ -218,7 +222,7 @@ const findLinkableSale = async (
       and(
         eq(sales.id, saleId),
         eq(sales.consultantId, consultantId),
-        eq(sales.status, COMPLETED_SALE_STATUS),
+        inArray(sales.status, LINKABLE_SALE_STATUSES),
       ),
     )
     .limit(1);
@@ -227,8 +231,7 @@ const findLinkableSale = async (
 
 // Regra de compatibilidade de cliente (RF-10): compromisso com clientId E
 // venda com clientId DIFERENTE ⇒ inválido. Venda sem cliente é vinculável a
-// qualquer compromisso; compromisso sem cliente aceita qualquer venda
-// `completed`. Lança `InvalidAppointmentSaleError` (mesma mensagem para
+// qualquer compromisso; compromisso sem cliente aceita qualquer venda ativa. Lança `InvalidAppointmentSaleError` (mesma mensagem para
 // inexistente/alheia/incompatível — não vaza existência).
 const assertLinkableSale = async (
   executor: Executor,
@@ -251,7 +254,7 @@ const assertLinkableSale = async (
 
 // Cliente atualmente vinculado a uma venda já linkada ao compromisso (usado
 // pela revalidação de compatibilidade do PUT, RF-07) — só a leitura do
-// clientId, sem repetir o filtro `completed` (a venda já foi validada quando
+// clientId, sem repetir o filtro de status (a venda já foi validada quando
 // vinculada; aqui só checamos consistência de cliente).
 const findSaleClientId = async (
   executor: Executor,

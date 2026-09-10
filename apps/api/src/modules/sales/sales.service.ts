@@ -136,22 +136,20 @@ export const deriveReceivableStatus = (
   return receivable.paidAt === null ? "pending" : "paid";
 };
 
-export const derivePaymentProjection = (
+// Regra ÚNICA do estado financeiro de uma venda (RF-09), a partir do total e do
+// que já foi efetivamente recebido. Venda cancelada não tem crédito nem dívida
+// cobrável: as cobranças pendentes viram anuladas e as pagas barram o
+// cancelamento. Usada tanto pelo composer quanto pelas leituras (detalhe soma
+// as linhas; listagem soma em SQL) — a projeção nunca diverge entre as duas.
+export const derivePaymentSummary = (
   totalCents: number,
   saleStatus: SaleStatus,
-  receivables: readonly ReceivableStateSnapshot[],
+  paidCents: number,
 ): PaymentProjection => {
   if (saleStatus === "canceled") {
     return { paymentStatus: "voided", paidCents: 0, outstandingCents: 0 };
   }
 
-  const paidCents = receivables.reduce(
-    (sum, receivable) =>
-      deriveReceivableStatus(receivable) === "paid"
-        ? sum + receivable.amountCents
-        : sum,
-    0,
-  );
   const outstandingCents = Math.max(totalCents - paidCents, 0);
 
   if (outstandingCents === 0) {
@@ -162,6 +160,23 @@ export const derivePaymentProjection = (
   }
   return { paymentStatus: "partial", paidCents, outstandingCents };
 };
+
+export const derivePaymentProjection = (
+  totalCents: number,
+  saleStatus: SaleStatus,
+  receivables: readonly ReceivableStateSnapshot[],
+): PaymentProjection =>
+  derivePaymentSummary(
+    totalCents,
+    saleStatus,
+    receivables.reduce(
+      (sum, receivable) =>
+        deriveReceivableStatus(receivable) === "paid"
+          ? sum + receivable.amountCents
+          : sum,
+      0,
+    ),
+  );
 
 const deriveInitialSaleStatus = (
   deliveryStatus: DeliveryStatus,
@@ -309,6 +324,19 @@ export const composeSaleCreation = (
   };
 };
 
+// Pedido de criação de venda: o service não lê o catálogo nem o relógio. Diz
+// QUAIS produtos precisam ser travados e entrega a função que compõe a venda a
+// partir das linhas já travadas e do instante canônico da transação (RF-04).
+// Assim a regra de negócio continua no service e o lock/atomicidade no
+// repository, sem janela entre ler o produto e inserir o item.
+export type SaleCreationRequest = {
+  productIds: string[];
+  compose: (
+    lockedProducts: readonly SaleProductSnapshot[],
+    transactionNow: Date,
+  ) => ComposedSale;
+};
+
 // Recebível enriquecido com dados da venda/cliente para a lista "quem me deve"
 // (RF-06): o escopo e os campos da cliente vêm do join com sales; o WhatsApp vem
 // do LEFT JOIN com clients (null quando a cliente foi excluída ou a venda é
@@ -337,13 +365,10 @@ export type ListReceivablesParams = {
 // setReceivablePaid) vivem DENTRO das transações do repository; o service compõe
 // os dados e traduz os retornos ausentes em erros de domínio.
 export type SalesRepositoryPort = {
-  // Carrega os produtos (escopados) para compor snapshot/preço default. Só
-  // retorna os que existem no escopo — o service aponta o item ausente (422).
-  findProductsByIds: (
+  createSale: (
     consultantId: string,
-    ids: string[],
-  ) => Promise<SaleProductSnapshot[]>;
-  createSale: (consultantId: string, sale: ComposedSale) => Promise<Sale>;
+    request: SaleCreationRequest,
+  ) => Promise<Sale>;
   list: (
     consultantId: string,
     params: ListSalesParams,
@@ -376,20 +401,12 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
   // recebíveis (Σ exata via splitInstallmentAmounts, vencimentos mensais via
   // addMonthsClamped). A persistência atômica (baixa de estoque, inserts,
   // snapshot de clientName) é do repository.
-  const create = async (
-    consultantId: string,
-    input: CreateSale,
-  ): Promise<Sale> => {
-    const uniqueIds = [...new Set(input.items.map((item) => item.productId))];
-    const products = await repository.findProductsByIds(
-      consultantId,
-      uniqueIds,
-    );
-    return repository.createSale(
-      consultantId,
-      composeSaleCreation(input, products, new Date()),
-    );
-  };
+  const create = (consultantId: string, input: CreateSale): Promise<Sale> =>
+    repository.createSale(consultantId, {
+      productIds: [...new Set(input.items.map((item) => item.productId))],
+      compose: (lockedProducts, transactionNow) =>
+        composeSaleCreation(input, lockedProducts, transactionNow),
+    });
 
   const list = async (
     consultantId: string,

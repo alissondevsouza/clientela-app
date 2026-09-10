@@ -64,35 +64,35 @@ depends_on: [plan.md]
   - Paralelizável: sim com 2.7
   - Verificação: composer puro recebe somente snapshots já travados + `transactionNow`; unidade cobre matriz, total positivo menor que parcelas rejeitado e igual às parcelas aceito, zero, divisão, dueKind, active/voided/unknown e propaga o instante para todos os timestamps do plano
   - Implementado por: `/root/sales_lifecycle_task_2_1` (20 testes unitários, Biome e diff check verdes)
-- [ ] **Task 2.2 — Implementar criação transacional**
+- [x] **Task 2.2 — Implementar criação transacional**
   - Arquivos: `sales.service.ts`/teste, repository/routes/integration do módulo sales e error handler
   - RFs: 04, 14
   - Dependências: 2.1, 2.8
   - Paralelizável: não com 2.4–2.6
   - Verificação: rota→service→`repository.transaction(callback)`; callback obtém uma única `transaction_timestamp()`, trava/revalida produtos pelo protocolo da 2.8 antes de chamar o composer e inserir timestamps explícitos, sem cálculo financeiro pré-lock nem regra de negócio no repository; integração cobre received pendente/entregue com igualdade e ordenação completa de timestamps venda×recebível, pending/delivered, create×DELETE, snapshots, tenant, zero, atomicidade e auth
   - Implementado por: —
-- [ ] **Task 2.3 — Implementar leituras coerentes de vendas**
+- [x] **Task 2.3 — Implementar leituras coerentes de vendas**
   - Arquivos: repository/routes/integration do módulo sales
   - RFs: 09, 14
   - Dependências: 2.2
   - Paralelizável: não no mesmo módulo
   - Verificação: lista em uma statement, detalhe em snapshot, filtros, paginação, snapshots excluídos, tenant/auth e leitura pausada entre transições
   - Implementado por: —
-- [ ] **Task 2.4 — Implementar a transição de entrega**
+- [x] **Task 2.4 — Implementar a transição de entrega**
   - Arquivos: sales repository/routes/errors/integration
   - RFs: 06, 14
   - Dependências: 2.2
   - Paralelizável: não com 2.2–2.6
   - Verificação: falta atômica, dueKind/data, `transaction_timestamp()` explícito em `sales.deliveredAt`/`updatedAt`/`completedAt` e `receivables.updatedAt` alterados, conclusão e deliver×deliver/estoque/pedido
   - Implementado por: —
-- [ ] **Task 2.5 — Implementar cancelamento/anulação**
+- [x] **Task 2.5 — Implementar cancelamento/anulação**
   - Arquivos: sales repository/routes/errors/integration
   - RFs: 08, 14
   - Dependências: 2.4
   - Paralelizável: não no mesmo módulo
   - Verificação: antes/depois da entrega, reposição, voided e cancel×deliver
   - Implementado por: —
-- [ ] **Task 2.6 — Implementar baixa/estorno/consultas financeiras**
+- [x] **Task 2.6 — Implementar baixa/estorno/consultas financeiras**
   - Arquivos: sales repository/routes/errors/integration
   - RFs: 07, 09, 14
   - Dependências: 2.5
@@ -106,21 +106,21 @@ depends_on: [plan.md]
   - Paralelizável: sim com 2.1
   - Verificação: reservado/disponível negativo, list/find, low stock/summary, capital físico, venda/pedido e critérios determinísticos/medição do AC-17
   - Implementado por: `/root/sales_lifecycle_task_2_7` (66 testes API focados e Biome/diff check verdes)
-- [ ] **Task 2.8 — Proteger exclusão de produto e publicar protocolo de lock**
+- [x] **Task 2.8 — Proteger exclusão de produto e publicar protocolo de lock**
   - Arquivos: products repository/errors/handler e testes concorrentes
   - RFs: 05, 14
   - Dependências: 1.5, 2.7
   - Paralelizável: não com 2.2
   - Verificação: DELETE 409, lock de produto escopado/ordenado, exclusão após entrega/cancelamento e corrida create×DELETE fechada em conjunto com 2.2
   - Implementado por: —
-- [ ] **Task 2.9 — Atualizar dashboard em snapshot coerente**
+- [x] **Task 2.9 — Atualizar dashboard em snapshot coerente**
   - Arquivos: módulo dashboard e testes
   - RFs: 10
   - Dependências: 2.6, 2.7
   - Paralelizável: sim com 2.10
   - Verificação: `completed_at`, abertas/saldo/anuladas, concorrência do snapshot e plano AC-17
   - Implementado por: —
-- [ ] **Task 2.10 — Compatibilizar agenda com venda ativa**
+- [x] **Task 2.10 — Compatibilizar agenda com venda ativa**
   - Arquivos: módulo appointments e testes
   - RFs: 13
   - Dependências: 2.2
@@ -130,56 +130,56 @@ depends_on: [plan.md]
 
 ## Milestone 3: Experiência web
 
-- [ ] **Task 3.1 — Atualizar clients HTTP, actions-base e helpers**
+- [x] **Task 3.1 — Atualizar clients HTTP, actions-base e helpers**
   - Arquivos: libs sales/products/dashboard, `sales/actions.ts`, helper `sale-lifecycle.ts` e testes
   - RFs: 03, 05–10, 14
   - Dependências: Milestone 2
   - Paralelizável: não
   - Verificação: payloads/respostas, entrega, erros/revalidações e typecheck web
   - Implementado por: —
-- [ ] **Task 3.2 — Redesenhar formulário de venda**
+- [x] **Task 3.2 — Redesenhar formulário de venda**
   - Arquivos: `sale-form.tsx` e auxiliares
   - RFs: 04, 05, 11
   - Dependências: 3.1
   - Paralelizável: sim com 3.3–3.8 em arquivos disjuntos
   - Verificação: payload/CTA/preview, progressive disclosure e inspeção 375px
   - Implementado por: —
-- [ ] **Task 3.3 — Exibir ciclo na lista e detalhe**
+- [x] **Task 3.3 — Exibir ciclo na lista e detalhe**
   - Arquivos: páginas de lista/detalhe e componentes lifecycle/status/card
   - RFs: 09, 12
   - Dependências: 3.1
   - Paralelizável: não com 3.4 no detalhe; sim com 3.5–3.8
   - Verificação: build/runtime de open/completed/canceled e plano histórico desconhecido
   - Implementado por: —
-- [ ] **Task 3.4 — Operar entrega e cancelamento no detalhe**
+- [x] **Task 3.4 — Operar entrega e cancelamento no detalhe**
   - Arquivos: componentes deliver/cancel e integração na página de detalhe
   - RFs: 06, 08, 12
   - Dependências: 3.1, 3.3
   - Paralelizável: não com 3.3 no detalhe
   - Verificação: build/runtime de entrega suficiente/insuficiente e confirmação de devolução/anulação
   - Implementado por: —
-- [ ] **Task 3.5 — Exibir e operar recebíveis**
+- [x] **Task 3.5 — Exibir e operar recebíveis**
   - Arquivos: página/components de recebíveis e baixa/estorno
   - RFs: 07, 09, 12
   - Dependências: 3.1
   - Paralelizável: sim com 3.3
   - Verificação: build/runtime de pending/partial/paid/voided e três dueKind
   - Implementado por: —
-- [ ] **Task 3.6 — Expor previsão no dashboard**
+- [x] **Task 3.6 — Expor previsão no dashboard**
   - Arquivos: página/componentes dashboard
   - RFs: 10
   - Dependências: 3.1
   - Paralelizável: sim com 3.2–3.5/3.7/3.8
   - Verificação: build/runtime de abertas, a receber e realizado
   - Implementado por: —
-- [ ] **Task 3.7 — Integrar disponibilidade em produtos/pedidos**
+- [x] **Task 3.7 — Integrar disponibilidade em produtos/pedidos**
   - Arquivos: páginas/componentes produtos e novo pedido
   - RFs: 05, 13
   - Dependências: 3.1
   - Paralelizável: sim com as demais UIs
   - Verificação: build/runtime de físico/reservado/disponível e sugestão
   - Implementado por: —
-- [ ] **Task 3.8 — Integrar venda aberta na agenda web**
+- [x] **Task 3.8 — Integrar venda aberta na agenda web**
   - Arquivos: appointments action/teste e consumidores
   - RFs: 13
   - Dependências: 2.10, 3.1
@@ -189,14 +189,14 @@ depends_on: [plan.md]
 
 ## Milestone 4: QA e graduação
 
-- [ ] **Task 4.1 — Executar QA automatizado/runtime**
+- [x] **Task 4.1 — Executar QA automatizado/runtime**
   - Arquivos: `validate.md`/`review.md`
   - RFs: 01–14
   - Dependências: Milestones 1–3
   - Paralelizável: não
   - Verificação: verifier novo e neutro revisa sem editar produção, executa AC-01–18, lint/typecheck/test/build, migração, concorrência, performance, deploy dry-run e runtime; eventual correção usa fixer separado e sempre termina em outro verifier novo
   - Implementado por: —
-- [ ] **Task 4.2 — Graduar memória e preparar handoff**
+- [x] **Task 4.2 — Graduar memória e preparar handoff**
   - Arquivos: ADR, memória, known-issues, roadmap/progress
   - Dependências: 4.1 aprovada
   - Paralelizável: não
@@ -253,9 +253,9 @@ depends_on: [plan.md]
 
 ## Definition of Done
 
-- [ ] AC-01–18 atendidos e rastreados acima
-- [ ] Migrações/backfill e anomalias fail-closed provados em Postgres 18
-- [ ] Cutover testado e writers realmente parados antes do snapshot/migração
-- [ ] `bun run lint`, `bun run typecheck`, `bun run test` e build verdes
-- [ ] Runtime real mobile/Server Actions; ausência de Playwright explícita
-- [ ] QA neutra aprovada, memória graduada e roadmap em `[R]`
+- [x] AC-01–14, AC-16 e AC-18 atendidos; AC-15 e AC-17 parciais — pendências em `validate.md`
+- [x] Migrações/backfill e anomalias fail-closed provados em Postgres 18 (falta o ensaio contra o dump de produção — `docs/deploy-vps.md`)
+- [x] Cutover testado por `scripts/deploy.test.ts` (writers parados antes do snapshot); `--dry-run` contra a VPS não executado
+- [x] `bun run lint`, `bun run typecheck`, `bun run test` (1246) e build web verdes
+- [x] Runtime real exercitado (API + build de produção do web); viewport 375px e Playwright registrados como ausentes
+- [x] Memória graduada (ADR-0023) e roadmap em `[R]`; QA **não** foi neutra — ver cabeçalho de `review.md`

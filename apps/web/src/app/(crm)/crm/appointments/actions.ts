@@ -13,6 +13,7 @@ import {
   createLeadCrmSchema,
   type LinkAppointmentSaleInput,
   linkAppointmentSaleSchema,
+  type SaleStatus,
   type UpdateAppointmentInput,
   updateAppointmentSchema,
 } from "@clientela/shared";
@@ -124,6 +125,7 @@ export type LinkableSale = {
   clientName: string;
   totalCents: number;
   soldAt: string;
+  status: SaleStatus;
 };
 
 export type ListLinkableSalesResult =
@@ -475,10 +477,14 @@ export const quickCreateLeadAction = async (
   };
 };
 
-// Lista as vendas ofertáveis ao vínculo (RF-10/RF-19): `completed` da cliente
-// vinculada quando há `clientId`; sem cliente, as vendas `completed` mais
-// recentes da consultora (`listSales` já ordena por `soldAt` descendente).
+// Vendas ATIVAS ofertáveis ao vínculo (RF-10/RF-19 + CRM-12/RF-13): `open` e
+// `completed` da cliente vinculada quando há `clientId`; sem cliente, as mais
+// recentes da consultora. Cancelada nunca é ofertada — a API também a rejeita.
+// A listagem filtra um status por vez, então as duas páginas são buscadas EM
+// PARALELO (sem waterfall) e reordenadas por `soldAt` desc, como uma lista só.
 // Projeção mínima (sem itens/recebíveis). Nunca lança.
+const LINKABLE_SALE_STATUSES = ["open", "completed"] as const;
+
 export const listLinkableSalesAction = async (
   clientId?: string,
 ): Promise<ListLinkableSalesResult> => {
@@ -488,25 +494,31 @@ export const listLinkableSalesAction = async (
   }
 
   const token = await requireToken();
+  const deps = { fetchImpl: fetch, apiUrl: loadWebEnv().API_URL, token };
 
-  const result = await listSales(
-    { status: "completed", clientId: parsedClientId.data },
-    { fetchImpl: fetch, apiUrl: loadWebEnv().API_URL, token },
+  const results = await Promise.all(
+    LINKABLE_SALE_STATUSES.map((status) =>
+      listSales({ status, clientId: parsedClientId.data }, deps),
+    ),
   );
 
-  if (!result.ok) {
-    return { ok: false, message: result.message };
+  const failed = results.find((result) => !result.ok);
+  if (failed && !failed.ok) {
+    return { ok: false, message: failed.message };
   }
 
-  return {
-    ok: true,
-    sales: result.data.map((sale) => ({
+  const sales = results
+    .flatMap((result) => (result.ok ? result.data : []))
+    .toSorted((left, right) => right.soldAt.localeCompare(left.soldAt))
+    .map((sale) => ({
       id: sale.id,
       clientName: sale.clientName,
       totalCents: sale.totalCents,
       soldAt: sale.soldAt,
-    })),
-  };
+      status: sale.status,
+    }));
+
+  return { ok: true, sales };
 };
 
 // Consulta sobreposições (GET /appointments/conflicts — RF-11): aviso NÃO

@@ -32,6 +32,7 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0020](./0020-crm-created-lead-consent.md) | Consentimento de lead criado pelo CRM (`source = "crm_manual"`) | Aceito |
 | [0021](./0021-shared-claude-codex-harness.md) | Harness compartilhado entre Claude Code e Codex | Aceito |
 | [0022](./0022-product-purchase-cost-mode.md) | Custo de produto manual ou derivado do desconto de compra | Aceito |
+| [0023](./0023-sale-lifecycle-and-payment-plans.md) | Ciclo de venda em aberto, planos de pagamento e reserva de estoque | Aceito |
 
 ## Template
 

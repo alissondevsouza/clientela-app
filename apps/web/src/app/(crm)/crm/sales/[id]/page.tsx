@@ -1,4 +1,12 @@
-import { PAYMENT_METHOD_LABELS, type SaleItem } from "@clientela/shared";
+import {
+  CARD_TYPE_LABELS,
+  DELIVERY_STATUS_LABELS,
+  PAYMENT_CONDITION_LABELS,
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_STATUS_LABELS,
+  type Sale,
+  type SaleItem,
+} from "@clientela/shared";
 import { ArrowLeft } from "lucide-react";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
@@ -20,7 +28,7 @@ const LOGIN_PATH = "/login";
 
 const CLIENT_LABEL = "Cliente";
 const SOLD_AT_LABEL = "Data";
-const PAYMENT_LABEL = "Pagamento";
+const PAYMENT_LABEL = "Forma de pagamento";
 const STATUS_LABEL = "Status";
 const ITEMS_HEADING = "Itens";
 const RECEIVABLES_HEADING = "Recebíveis";
@@ -29,10 +37,38 @@ const NO_CLIENT_TEXT = "—";
 const QTY_TIMES = "×";
 const CANCELED_NOTICE = "Venda cancelada";
 const CANCELED_NOTICE_DETAIL =
-  "Esta venda foi cancelada: os itens voltaram ao estoque e as parcelas pendentes foram removidas. O histórico é mantido.";
+  "Esta venda foi cancelada: as parcelas pendentes foram anuladas e seguem no histórico. Os itens já entregues voltaram ao estoque.";
+
+const DELIVERY_LABEL = "Entrega";
+const DELIVERED_AT_PREFIX = "Entregue em";
+const PAYMENT_STATUS_LABEL = "Pagamento";
+const OUTSTANDING_PREFIX = "Falta receber:";
+const UNKNOWN_PLAN_NOTICE =
+  "Detalhes do parcelamento não disponíveis no histórico.";
+
+const PLAN_SEPARATOR = " · ";
 
 const ISO_DATE_TIME_SEPARATOR = "T";
 const SALE_CANCELED = "canceled";
+
+// Plano de pagamento em uma linha: forma, tipo de cartão quando houver e
+// condição (com o número de parcelas quando parcelado). Histórico sem plano
+// recuperável mostra só o que existe — o aviso fica no bloco abaixo.
+const describePaymentPlan = (sale: Sale): string => {
+  const parts = [PAYMENT_METHOD_LABELS[sale.paymentMethod]];
+  if (sale.cardType !== null) {
+    parts.push(CARD_TYPE_LABELS[sale.cardType]);
+  }
+  if (!sale.paymentPlanKnown) {
+    return parts.join(PLAN_SEPARATOR);
+  }
+  parts.push(
+    sale.paymentCondition === "installments"
+      ? `${PAYMENT_CONDITION_LABELS.installments} em ${sale.installments}×`
+      : PAYMENT_CONDITION_LABELS[sale.paymentCondition],
+  );
+  return parts.join(PLAN_SEPARATOR);
+};
 
 const clientDetailHref = (clientId: string): string =>
   `/crm/clients/${clientId}`;
@@ -138,7 +174,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{PAYMENT_LABEL}</dt>
-          <dd>{PAYMENT_METHOD_LABELS[sale.paymentMethod]}</dd>
+          <dd>{describePaymentPlan(sale)}</dd>
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{STATUS_LABEL}</dt>
@@ -146,6 +182,38 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
             <SaleStatusBadge status={sale.status} />
           </dd>
         </div>
+        {/* Entrega e pagamento são estados INDEPENDENTES do status (CRM-12):
+            "Em aberto" sozinho não diz o que falta. Sempre em texto. */}
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{DELIVERY_LABEL}</dt>
+          <dd>
+            {DELIVERY_STATUS_LABELS[sale.deliveryStatus]}
+            {sale.deliveredAt !== null ? (
+              <span className="block text-xs text-muted-foreground">
+                {DELIVERED_AT_PREFIX}{" "}
+                {formatDateBr(toDatePart(sale.deliveredAt))}
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{PAYMENT_STATUS_LABEL}</dt>
+          <dd>
+            {PAYMENT_STATUS_LABELS[sale.paymentStatus]}
+            {sale.outstandingCents > 0 ? (
+              <span className="block text-xs text-muted-foreground">
+                {OUTSTANDING_PREFIX} {formatBRL(sale.outstandingCents)}
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        {!sale.paymentPlanKnown ? (
+          <div className="flex flex-col gap-0.5 sm:col-span-2">
+            <dd className="text-xs text-muted-foreground">
+              {UNKNOWN_PLAN_NOTICE}
+            </dd>
+          </div>
+        ) : null}
       </dl>
 
       <section className="flex flex-col gap-3">
@@ -200,7 +268,12 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
       {!isCanceled && sale.deliveryStatus === "pending" ? (
         <DeliverSaleButton saleId={sale.id} />
       ) : null}
-      {!isCanceled ? <CancelSaleButton saleId={sale.id} /> : null}
+      {!isCanceled ? (
+        <CancelSaleButton
+          saleId={sale.id}
+          delivered={sale.deliveryStatus === "delivered"}
+        />
+      ) : null}
     </div>
   );
 }

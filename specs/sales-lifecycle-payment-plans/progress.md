@@ -1,16 +1,16 @@
 ---
 feature: sales-lifecycle-payment-plans
 module: shared, api, web, infra
-phase: implementation
-status: in_progress
-updated: 2026-09-09
+phase: handoff
+status: ready_for_review
+updated: 2026-09-10
 ---
 
 # Progress: sales-lifecycle-payment-plans
 
-**Status:** in_progress
-**Current Phase:** implementation
-**Current Task:** Task 2.8 — proteção de exclusão e locks de produto
+**Status:** ready_for_review (handoff entregue; commit é do humano — ADR-0006)
+**Current Phase:** handoff
+**Current Task:** —
 
 ## Decisions Log
 
@@ -42,13 +42,19 @@ updated: 2026-09-09
 | 2026-09-10 | implementation | Task 1.5 concluída | Schema final/0013 e cadeia literal 0010→0013 validados em Postgres 18; cartão legado sem tipo preservado apenas no formato compatível |
 | 2026-09-10 | implementation | Task 2.1 concluída | Composer puro de venda/plano e projeções financeiras entregue com 20 testes unitários verdes |
 | 2026-09-10 | implementation | Task 2.7 concluída | Reserva/disponibilidade por subquery tenant-safe entregue com 66 testes API focados verdes |
+| 2026-09-10 | qa | Estado financeiro passa a ter UMA regra (`derivePaymentSummary`) usada por composer, detalhe e listagem | A listagem devolvia valores de fachada (`paidCents: 0`); duplicar a regra em SQL e em TS voltaria a divergir |
+| 2026-09-10 | qa | Criação trava as linhas de produto e usa `transaction_timestamp()` dentro da transação | Fecha a janela criação × DELETE do RF-05 e tira os CHECKs temporais da dependência do relógio da aplicação |
+| 2026-09-10 | qa | Cobrança anulada é excluída de toda cobrança (dashboard e listagem, inclusive `pending=false`) | Dívida anulada não é dívida; o backfill cria uma anulada com o valor cheio para cada crédito legado cancelado |
+| 2026-09-10 | qa | Vínculo da agenda aceita venda `open` | Sem isso a encomenda combinada no compromisso — o caso mais comum — ficaria sem vínculo |
+| 2026-09-10 | qa | Ensaio da migração contra o dump de produção vira passo obrigatório documentado | A auditoria é fail-closed e falha com `api`/`web` já parados: descobrir a anomalia no deploy custa indisponibilidade |
+| 2026-09-10 | qa | Decisões duráveis graduadas no ADR-0023 | Ciclo, matriz de pagamento, anulação, reserva e tempo canônico passam a valer além desta feature |
 
 ## Milestones
 
-- [ ] Milestone 1: contrato e migração do ciclo de venda
-- [ ] Milestone 2: transições, estoque e pagamentos na API
-- [ ] Milestone 3: experiência web e previsão financeira
-- [ ] Milestone 4: validação e graduação
+- [x] Milestone 1: contrato e migração do ciclo de venda
+- [x] Milestone 2: transições, estoque e pagamentos na API
+- [x] Milestone 3: experiência web e previsão financeira
+- [x] Milestone 4: validação e graduação (com pendências declaradas em `validate.md`)
 
 ## Session Log
 
@@ -67,3 +73,4 @@ updated: 2026-09-09
 | 2026-09-10 | 2 | spec-review-8 | Oitava revisão detectou fonte temporal não única na criação recebida | Tempo canônico do Postgres e persistência explícita foram incorporados; nona revisão isolada deve confirmar antes de código |
 | 2026-09-10 | 2 | spec-review-9 | Nona revisão exigiu cobertura executável do tempo canônico em entrega e baixa/estorno | RFs, critérios e tasks agora exigem igualdade dos timestamps correlatos; décima revisão isolada pendente |
 | 2026-09-10 | 2 | spec-review-10 | Décima auditoria aprovou os artefatos | Início da implementação autorizado pela QA neutra |
+| 2026-09-10 | 3 | qa+fix | Auditoria de prontidão para deploy pedida pelo humano: 3 defeitos críticos e 5 alertas encontrados e corrigidos, 12 testes novos, runtime real exercitado, ADR-0023 escrito | Revisão feita pelo mesmo agente que corrigiu — **não** foi a QA neutra da Task 4.1 (registrado no cabeçalho de `review.md`) |

@@ -10,6 +10,7 @@ const PRICE_LABEL = "Preço";
 const COST_LABEL = "Custo";
 const DISCOUNT_LABEL = "Desconto";
 const STOCK_LABEL = "Estoque";
+const AVAILABLE_LABEL = "disponíveis";
 const LOW_STOCK_TEXT = "Estoque baixo";
 
 const productDetailHref = (id: string): string => `/crm/products/${id}`;
@@ -75,6 +76,11 @@ export function ProductCard({ product }: { product: Product }) {
         <p className="text-sm text-muted-foreground">
           <span className="font-medium text-foreground">{STOCK_LABEL}:</span>{" "}
           {product.stockQty}
+          {/* Com reserva, o número físico sozinho engana (e contradiz o selo de
+              estoque baixo, que já usa a disponibilidade). */}
+          {product.reservedQty > 0
+            ? ` (${product.availableQty} ${AVAILABLE_LABEL})`
+            : null}
         </p>
       </CardContent>
     </Card>

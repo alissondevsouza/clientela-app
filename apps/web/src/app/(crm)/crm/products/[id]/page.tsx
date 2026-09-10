@@ -29,7 +29,10 @@ const PRICE_LABEL = "Preço sugerido";
 const COST_MODE_LABEL = "Forma do custo";
 const COST_LABEL = "Custo atual";
 const MARGIN_LABEL = "Margem bruta estimada";
-const STOCK_LABEL = "Estoque";
+const STOCK_LABEL = "Estoque físico";
+const RESERVED_LABEL = "Reservado";
+const AVAILABLE_LABEL = "Disponível";
+const RESERVED_HINT = "Comprometido com vendas em aberto ainda não entregues.";
 const LOW_STOCK_THRESHOLD_LABEL = "Alerta em";
 const LOW_STOCK_BADGE = "Estoque baixo";
 const NOT_INFORMED = "Não informado";
@@ -151,6 +154,27 @@ export default async function ProductDetailPage({
             {product.stockQty} {unitLabel(product.stockQty)}
           </dd>
         </div>
+        {/* Reserva só aparece quando existe: sem venda em aberto, os três
+            números seriam iguais e só poluiriam a leitura no celular. */}
+        {product.reservedQty > 0 ? (
+          <>
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">{RESERVED_LABEL}</dt>
+              <dd>
+                {product.reservedQty} {unitLabel(product.reservedQty)}
+                <span className="block text-xs text-muted-foreground">
+                  {RESERVED_HINT}
+                </span>
+              </dd>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">{AVAILABLE_LABEL}</dt>
+              <dd>
+                {product.availableQty} {unitLabel(product.availableQty)}
+              </dd>
+            </div>
+          </>
+        ) : null}
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{LOW_STOCK_THRESHOLD_LABEL}</dt>
           <dd>
