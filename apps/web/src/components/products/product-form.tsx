@@ -5,111 +5,179 @@ import {
   createProductSchema,
 } from "@clientela/shared";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useState, useTransition } from "react";
-import { useForm } from "react-hook-form";
+import { type ChangeEvent, useRef, useState, useTransition } from "react";
+import { useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 import type { ProductActionResult } from "@/app/(crm)/crm/products/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { parseBRLToCents } from "@/lib/format";
+import { centsToReaisInput, formatBRL, parseBRLToCents } from "@/lib/format";
+import {
+  buildProductPricingPreview,
+  composeProductFinancialPayload,
+  formatMarginPercentage,
+  OTHER_DISCOUNT_SELECTION,
+  type ProductPricingDraft,
+  PURCHASE_DISCOUNT_PRESETS,
+  purchaseDiscountDraftFromBasisPoints,
+} from "@/lib/product-pricing";
+import { cn } from "@/lib/utils";
 
 const NAME_ID = "product-name";
 const BRAND_CODE_ID = "product-brand-code";
-const COST_ID = "product-cost";
 const PRICE_ID = "product-price";
+const COST_MODE_HELP_ID = "product-cost-mode-help";
+const DISCOUNT_HELP_ID = "product-discount-help";
+const CUSTOM_DISCOUNT_ID = "product-custom-discount";
+const MANUAL_COST_ID = "product-manual-cost";
 const STOCK_QTY_ID = "product-stock-qty";
 const LOW_STOCK_ID = "product-low-stock-threshold";
 
 const NAME_LABEL = "Nome";
 const BRAND_CODE_LABEL = "Código Mary Kay";
-const COST_LABEL = "Custo (R$)";
-const PRICE_LABEL = "Preço (R$)";
+const PRICE_LABEL = "Preço sugerido (R$)";
+const MANUAL_COST_LABEL = "Custo (R$)";
 const STOCK_QTY_LABEL = "Estoque";
 const LOW_STOCK_LABEL = "Alerta de estoque baixo";
+
+const DISCOUNT_MODE = "discount";
+const MANUAL_MODE = "manual";
+const DISCOUNT_MODE_LABEL = "Desconto da consultora";
+const MANUAL_MODE_LABEL = "Informar custo diretamente";
+const COST_MODE_LEGEND = "Como deseja informar o custo?";
+const COST_MODE_HELP =
+  "Escolha o desconto recebido na compra ou informe o valor pago diretamente.";
+const DISCOUNT_LEGEND = "Qual é o desconto de compra?";
+const DISCOUNT_HELP =
+  "Escolha uma opção. Em Outro, informe um percentual de 0% a 100%.";
+const CUSTOM_DISCOUNT_LABEL = "Percentual personalizado (%)";
+const CUSTOM_DISCOUNT_HELP = "Use até duas casas decimais, por exemplo 37,5%.";
+const DISCOUNT_REQUIRED_MESSAGE = "Escolha o desconto de compra";
+const DISCOUNT_INVALID_MESSAGE =
+  "Informe um desconto entre 0% e 100% com até duas casas decimais";
 
 const OPTIONAL_HINT = "(opcional)";
 const SUBMITTING_LABEL = "Salvando...";
 const MONEY_PLACEHOLDER = "0,00";
+const PERCENTAGE_PLACEHOLDER = "37,5";
 const LOW_STOCK_HELP =
   "O produto é marcado como estoque baixo quando a quantidade em mãos for menor ou igual a este valor.";
+const PREVIEW_LABEL = "Prévia financeira";
+const COST_PREVIEW_LABEL = "Você paga";
+const MARGIN_PREVIEW_LABEL = "Margem bruta estimada";
+const MARGIN_DISCLAIMER =
+  "Estimativa bruta sobre o preço sugerido; não representa lucro líquido.";
 
 const COST_INVALID_MESSAGE = "Custo inválido — use o formato 12,34";
 const PRICE_INVALID_MESSAGE = "Preço inválido — use o formato 12,34";
 
-// String vazia de campo opcional vira `undefined` ANTES de validar, para não
-// falhar a checagem de tamanho de um campo em branco. Retorno tipado com `null`
-// (além de `undefined`) só para casar a variância do `.pipe` com o campo
-// `nullable` do contrato; em runtime um campo vazio sempre vira `undefined` (o
-// mapeamento para `null` no EDIT é feito em `buildPayload`).
+type PricingMode = typeof DISCOUNT_MODE | typeof MANUAL_MODE;
+
 const emptyToUndefined = (value: string): string | null | undefined =>
   value.trim().length === 0 ? undefined : value;
 
-// Campo de dinheiro digitado em reais (pt-BR): a string é convertida para
-// centavos inteiros por `parseBRLToCents` (aritmética de string, sem float —
-// core.md/database.md). Entrada inválida vira issue de campo pt-BR (retorno
-// `z.NEVER`); o valor válido segue para o schema do contrato, que aplica o teto
-// (R$ 1.000.000,00) com a mensagem pt-BR já definida em `packages/shared`.
 const reaisToCents = (
   invalidMessage: string,
-  contractField: typeof createProductSchema.shape.costCents,
+  contractField: typeof createProductSchema.shape.priceCents,
 ) =>
   z
     .string()
-    .transform((value, ctx) => {
+    .transform((value, context) => {
       const cents = parseBRLToCents(value);
       if (cents === null) {
-        ctx.addIssue({ code: "custom", message: invalidMessage });
+        context.addIssue({ code: "custom", message: invalidMessage });
         return z.NEVER;
       }
       return cents;
     })
     .pipe(contractField);
 
-// Inteiro digitado em input numérico: string → número (vazio vira `NaN` para
-// cair na mensagem pt-BR de "número inteiro" do contrato, em vez de virar 0
-// silenciosamente). O schema do contrato aplica inteiro/≥ 0/teto.
 const stringToInt = (value: string): number =>
   value.trim().length === 0 ? Number.NaN : Number(value);
 
-const productFormSchema = z.object({
-  name: createProductSchema.shape.name,
-  brandCode: z
-    .string()
-    .transform(emptyToUndefined)
-    .pipe(createProductSchema.shape.brandCode),
-  costCents: reaisToCents(
-    COST_INVALID_MESSAGE,
-    createProductSchema.shape.costCents,
-  ),
-  priceCents: reaisToCents(
-    PRICE_INVALID_MESSAGE,
-    createProductSchema.shape.priceCents,
-  ),
-  // `.unwrap()` remove o `.default` do campo do contrato: o transform sempre
-  // produz um número (nunca `undefined`), então o default do CREATE não se aplica
-  // aqui — reusamos apenas a validação inteiro/≥ 0/teto com as mensagens pt-BR.
-  stockQty: z
-    .string()
-    .transform(stringToInt)
-    .pipe(createProductSchema.shape.stockQty.unwrap()),
-  lowStockThreshold: z
-    .string()
-    .transform(stringToInt)
-    .pipe(createProductSchema.shape.lowStockThreshold.unwrap()),
-});
+const discountSelectionSchema = z
+  .enum(["3000", "3500", "4000", OTHER_DISCOUNT_SELECTION])
+  .nullable();
 
-// Input (z.input): todos os campos são `string` (inputs controlados desde o
-// primeiro render). Output (z.output): reais viram centavos, inteiros viram
-// número e o código opcional vira `string | null | undefined`.
+const manualCostSchema = createProductSchema.shape.costCents.unwrap();
+
+const productFormSchema = z
+  .object({
+    name: createProductSchema.shape.name,
+    brandCode: z
+      .string()
+      .transform(emptyToUndefined)
+      .pipe(createProductSchema.shape.brandCode),
+    priceCents: reaisToCents(
+      PRICE_INVALID_MESSAGE,
+      createProductSchema.shape.priceCents,
+    ),
+    pricingMode: z.enum([DISCOUNT_MODE, MANUAL_MODE]),
+    costCents: z.string(),
+    discountSelection: discountSelectionSchema,
+    customDiscountInput: z.string(),
+    stockQty: z
+      .string()
+      .transform(stringToInt)
+      .pipe(createProductSchema.shape.stockQty.unwrap()),
+    lowStockThreshold: z
+      .string()
+      .transform(stringToInt)
+      .pipe(createProductSchema.shape.lowStockThreshold.unwrap()),
+  })
+  .superRefine((values, context) => {
+    if (values.pricingMode === MANUAL_MODE) {
+      const costCents = parseBRLToCents(values.costCents);
+      if (costCents === null) {
+        context.addIssue({
+          code: "custom",
+          path: ["costCents"],
+          message: COST_INVALID_MESSAGE,
+        });
+        return;
+      }
+
+      const parsedCost = manualCostSchema.safeParse(costCents);
+      if (!parsedCost.success) {
+        context.addIssue({
+          code: "custom",
+          path: ["costCents"],
+          message:
+            parsedCost.error.issues.at(0)?.message ?? COST_INVALID_MESSAGE,
+        });
+      }
+      return;
+    }
+
+    const financialPayload = composeProductFinancialPayload({
+      mode: DISCOUNT_MODE,
+      discountSelection: values.discountSelection,
+      customDiscountInput: values.customDiscountInput,
+    });
+    if (financialPayload !== null) {
+      return;
+    }
+
+    const isCustom = values.discountSelection === OTHER_DISCOUNT_SELECTION;
+    context.addIssue({
+      code: "custom",
+      path: [isCustom ? "customDiscountInput" : "discountSelection"],
+      message: isCustom ? DISCOUNT_INVALID_MESSAGE : DISCOUNT_REQUIRED_MESSAGE,
+    });
+  });
+
 type ProductFormFieldValues = z.input<typeof productFormSchema>;
 type ProductFormValues = z.output<typeof productFormSchema>;
 
 const EMPTY_VALUES: ProductFormFieldValues = {
   name: "",
   brandCode: "",
-  costCents: "",
   priceCents: "",
+  pricingMode: DISCOUNT_MODE,
+  costCents: "",
+  discountSelection: null,
+  customDiscountInput: "",
   stockQty: "0",
   lowStockThreshold: "1",
 };
@@ -121,21 +189,40 @@ export type ProductFormProps = {
   submitLabel: string;
   onSubmit: (values: CreateProductInput) => Promise<ProductActionResult>;
   defaultValues?: Partial<ProductFormFieldValues>;
+  purchaseDiscountBps?: number | null;
 };
 
-// Monta o payload enviado à action. No EDIT, o código Mary Kay vazio (undefined)
-// vira `null` explícito para LIMPAR o campo no PATCH (decisão do plan); no CREATE
-// o vazio permanece `undefined` e é omitido do corpo.
+const toPricingDraft = (
+  values: Pick<
+    ProductFormFieldValues,
+    "pricingMode" | "costCents" | "discountSelection" | "customDiscountInput"
+  >,
+): ProductPricingDraft =>
+  values.pricingMode === MANUAL_MODE
+    ? { mode: MANUAL_MODE, costInput: values.costCents }
+    : {
+        mode: DISCOUNT_MODE,
+        discountSelection: values.discountSelection,
+        customDiscountInput: values.customDiscountInput,
+      };
+
 const buildPayload = (
   mode: ProductFormMode,
   values: ProductFormValues,
-): CreateProductInput => {
+): CreateProductInput | null => {
+  const financialPayload = composeProductFinancialPayload(
+    toPricingDraft(values),
+  );
+  if (financialPayload === null) {
+    return null;
+  }
+
   const base = {
     name: values.name,
-    costCents: values.costCents,
     priceCents: values.priceCents,
     stockQty: values.stockQty,
     lowStockThreshold: values.lowStockThreshold,
+    ...financialPayload,
   };
   if (mode === "edit") {
     return { ...base, brandCode: values.brandCode ?? null };
@@ -143,34 +230,118 @@ const buildPayload = (
   return { ...base, brandCode: values.brandCode };
 };
 
-// Form de produto (Client Component, folha da árvore): reusado em cadastro e
-// edição. RHF + zodResolver com um schema de UI local (reais na tela) que
-// converte para o contrato compartilhado em centavos no submit — a fonte única
-// de validação numérica permanece em `packages/shared`. Estados de web.md:
-// enviando (botão desabilitado + "Salvando...") e erro do servidor (pt-BR em
-// `role="alert"`); erros de campo em pt-BR sob cada input.
 export function ProductForm({
   mode,
   submitLabel,
   onSubmit,
   defaultValues,
+  purchaseDiscountBps,
 }: ProductFormProps) {
   const [isPending, startTransition] = useTransition();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const initialDiscountDraft = purchaseDiscountDraftFromBasisPoints(
+    purchaseDiscountBps ?? null,
+  );
+  const initialPricingMode: PricingMode =
+    purchaseDiscountBps !== undefined && purchaseDiscountBps !== null
+      ? DISCOUNT_MODE
+      : mode === "edit"
+        ? MANUAL_MODE
+        : DISCOUNT_MODE;
+  const persistedCostInput = defaultValues?.costCents ?? "";
+  const persistedCostInputRef = useRef(persistedCostInput);
+  const hasManualDraftRef = useRef(initialPricingMode === MANUAL_MODE);
+
   const {
+    control,
     register,
     handleSubmit,
+    setValue,
+    setError,
+    clearErrors,
     formState: { errors },
   } = useForm<ProductFormFieldValues, unknown, ProductFormValues>({
     resolver: zodResolver(productFormSchema),
-    defaultValues: { ...EMPTY_VALUES, ...defaultValues },
+    defaultValues: {
+      ...EMPTY_VALUES,
+      ...defaultValues,
+      pricingMode: initialPricingMode,
+      costCents: initialPricingMode === MANUAL_MODE ? persistedCostInput : "",
+      discountSelection: initialDiscountDraft.selection,
+      customDiscountInput: initialDiscountDraft.customPercentage,
+    },
   });
 
+  const [
+    pricingMode,
+    priceInput,
+    costInput,
+    discountSelection,
+    customDiscountInput,
+  ] = useWatch({
+    control,
+    name: [
+      "pricingMode",
+      "priceCents",
+      "costCents",
+      "discountSelection",
+      "customDiscountInput",
+    ],
+  });
+
+  const pricingDraft = toPricingDraft({
+    pricingMode,
+    costCents: costInput,
+    discountSelection,
+    customDiscountInput,
+  });
+  const preview = buildProductPricingPreview(priceInput, pricingDraft);
+
+  const pricingModeRegistration = register("pricingMode");
+  const handlePricingModeChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (
+      event.currentTarget.value === MANUAL_MODE &&
+      !hasManualDraftRef.current
+    ) {
+      const nextManualCost =
+        preview !== null
+          ? centsToReaisInput(preview.costCents)
+          : persistedCostInputRef.current;
+      setValue("costCents", nextManualCost, { shouldDirty: true });
+      hasManualDraftRef.current = true;
+    }
+
+    clearErrors(["costCents", "discountSelection", "customDiscountInput"]);
+    void pricingModeRegistration.onChange(event);
+  };
+
   const submit = (values: ProductFormValues) => {
+    const payload = buildPayload(mode, values);
+    if (payload === null) {
+      const isManual = values.pricingMode === MANUAL_MODE;
+      const isCustom = values.discountSelection === OTHER_DISCOUNT_SELECTION;
+      setError(
+        isManual
+          ? "costCents"
+          : isCustom
+            ? "customDiscountInput"
+            : "discountSelection",
+        {
+          type: "manual",
+          message: isManual
+            ? COST_INVALID_MESSAGE
+            : isCustom
+              ? DISCOUNT_INVALID_MESSAGE
+              : DISCOUNT_REQUIRED_MESSAGE,
+        },
+      );
+      return;
+    }
+
     setErrorMessage(null);
     startTransition(async () => {
-      const result = await onSubmit(buildPayload(mode, values));
+      const result = await onSubmit(payload);
       if (!result.ok) {
         setErrorMessage(result.message);
       }
@@ -179,16 +350,25 @@ export function ProductForm({
 
   const nameError = errors.name?.message;
   const brandCodeError = errors.brandCode?.message;
-  const costError = errors.costCents?.message;
   const priceError = errors.priceCents?.message;
+  const costError = errors.costCents?.message;
+  const discountSelectionError = errors.discountSelection?.message;
+  const customDiscountError = errors.customDiscountInput?.message;
   const stockQtyError = errors.stockQty?.message;
   const lowStockError = errors.lowStockThreshold?.message;
+
+  const discountDescription = `${DISCOUNT_HELP_ID}${
+    discountSelectionError ? ` ${DISCOUNT_HELP_ID}-error` : ""
+  }`;
+  const customDiscountDescription = `${CUSTOM_DISCOUNT_ID}-help${
+    customDiscountError ? ` ${CUSTOM_DISCOUNT_ID}-error` : ""
+  }`;
 
   return (
     <form
       onSubmit={handleSubmit(submit)}
       noValidate
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-5"
     >
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={NAME_ID}>{NAME_LABEL}</Label>
@@ -229,45 +409,226 @@ export function ProductForm({
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={PRICE_ID}>{PRICE_LABEL}</Label>
+        <Input
+          id={PRICE_ID}
+          type="text"
+          inputMode="decimal"
+          placeholder={MONEY_PLACEHOLDER}
+          className="h-11 md:h-9"
+          aria-invalid={priceError ? true : undefined}
+          aria-describedby={priceError ? `${PRICE_ID}-error` : undefined}
+          {...register("priceCents")}
+        />
+        {priceError ? (
+          <p id={`${PRICE_ID}-error`} className="text-sm text-destructive">
+            {priceError}
+          </p>
+        ) : null}
+      </div>
+
+      <fieldset
+        aria-describedby={COST_MODE_HELP_ID}
+        className="flex flex-col gap-2"
+      >
+        <legend className="text-sm font-medium">{COST_MODE_LEGEND}</legend>
+        <p id={COST_MODE_HELP_ID} className="text-xs text-muted-foreground">
+          {COST_MODE_HELP}
+        </p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <label
+            htmlFor="product-cost-mode-discount"
+            className={cn(
+              "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm",
+              "transition-colors focus-within:ring-3 focus-within:ring-ring/50",
+              pricingMode === DISCOUNT_MODE
+                ? "border-primary bg-primary/5"
+                : "border-input bg-background hover:bg-muted",
+            )}
+          >
+            <input
+              id="product-cost-mode-discount"
+              type="radio"
+              value={DISCOUNT_MODE}
+              className="size-5 shrink-0 accent-primary"
+              {...pricingModeRegistration}
+              onChange={handlePricingModeChange}
+            />
+            <span className="font-medium">{DISCOUNT_MODE_LABEL}</span>
+          </label>
+          <label
+            htmlFor="product-cost-mode-manual"
+            className={cn(
+              "flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm",
+              "transition-colors focus-within:ring-3 focus-within:ring-ring/50",
+              pricingMode === MANUAL_MODE
+                ? "border-primary bg-primary/5"
+                : "border-input bg-background hover:bg-muted",
+            )}
+          >
+            <input
+              id="product-cost-mode-manual"
+              type="radio"
+              value={MANUAL_MODE}
+              className="size-5 shrink-0 accent-primary"
+              {...pricingModeRegistration}
+              onChange={handlePricingModeChange}
+            />
+            <span className="font-medium">{MANUAL_MODE_LABEL}</span>
+          </label>
+        </div>
+      </fieldset>
+
+      {pricingMode === DISCOUNT_MODE ? (
+        <fieldset
+          aria-invalid={discountSelectionError ? true : undefined}
+          aria-describedby={discountDescription}
+          className="flex flex-col gap-2"
+        >
+          <legend className="text-sm font-medium">{DISCOUNT_LEGEND}</legend>
+          <p id={DISCOUNT_HELP_ID} className="text-xs text-muted-foreground">
+            {DISCOUNT_HELP}
+          </p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {PURCHASE_DISCOUNT_PRESETS.map((preset) => {
+              const inputId = `product-discount-${preset.selection}`;
+              return (
+                <label
+                  key={preset.selection}
+                  htmlFor={inputId}
+                  className={cn(
+                    "flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm",
+                    "transition-colors focus-within:ring-3 focus-within:ring-ring/50",
+                    discountSelection === preset.selection
+                      ? "border-primary bg-primary/5"
+                      : "border-input bg-background hover:bg-muted",
+                  )}
+                >
+                  <input
+                    id={inputId}
+                    type="radio"
+                    value={preset.selection}
+                    className="size-5 shrink-0 accent-primary"
+                    aria-describedby={discountDescription}
+                    {...register("discountSelection")}
+                  />
+                  <span className="font-medium">{preset.label}</span>
+                </label>
+              );
+            })}
+            <label
+              htmlFor="product-discount-other"
+              className={cn(
+                "flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm",
+                "transition-colors focus-within:ring-3 focus-within:ring-ring/50",
+                discountSelection === OTHER_DISCOUNT_SELECTION
+                  ? "border-primary bg-primary/5"
+                  : "border-input bg-background hover:bg-muted",
+              )}
+            >
+              <input
+                id="product-discount-other"
+                type="radio"
+                value={OTHER_DISCOUNT_SELECTION}
+                className="size-5 shrink-0 accent-primary"
+                aria-describedby={discountDescription}
+                {...register("discountSelection")}
+              />
+              <span className="font-medium">Outro</span>
+            </label>
+          </div>
+          {discountSelectionError ? (
+            <p
+              id={`${DISCOUNT_HELP_ID}-error`}
+              className="text-sm text-destructive"
+            >
+              {discountSelectionError}
+            </p>
+          ) : null}
+
+          {discountSelection === OTHER_DISCOUNT_SELECTION ? (
+            <div className="mt-1 flex flex-col gap-1.5">
+              <Label htmlFor={CUSTOM_DISCOUNT_ID}>
+                {CUSTOM_DISCOUNT_LABEL}
+              </Label>
+              <Input
+                id={CUSTOM_DISCOUNT_ID}
+                type="text"
+                inputMode="decimal"
+                placeholder={PERCENTAGE_PLACEHOLDER}
+                className="h-11 md:h-9"
+                aria-invalid={customDiscountError ? true : undefined}
+                aria-describedby={customDiscountDescription}
+                {...register("customDiscountInput")}
+              />
+              <p
+                id={`${CUSTOM_DISCOUNT_ID}-help`}
+                className="text-xs text-muted-foreground"
+              >
+                {CUSTOM_DISCOUNT_HELP}
+              </p>
+              {customDiscountError ? (
+                <p
+                  id={`${CUSTOM_DISCOUNT_ID}-error`}
+                  className="text-sm text-destructive"
+                >
+                  {customDiscountError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </fieldset>
+      ) : (
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor={COST_ID}>{COST_LABEL}</Label>
+          <Label htmlFor={MANUAL_COST_ID}>{MANUAL_COST_LABEL}</Label>
           <Input
-            id={COST_ID}
+            id={MANUAL_COST_ID}
             type="text"
             inputMode="decimal"
             placeholder={MONEY_PLACEHOLDER}
             className="h-11 md:h-9"
             aria-invalid={costError ? true : undefined}
-            aria-describedby={costError ? `${COST_ID}-error` : undefined}
+            aria-describedby={costError ? `${MANUAL_COST_ID}-error` : undefined}
             {...register("costCents")}
           />
           {costError ? (
-            <p id={`${COST_ID}-error`} className="text-sm text-destructive">
+            <p
+              id={`${MANUAL_COST_ID}-error`}
+              className="text-sm text-destructive"
+            >
               {costError}
             </p>
           ) : null}
         </div>
+      )}
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={PRICE_ID}>{PRICE_LABEL}</Label>
-          <Input
-            id={PRICE_ID}
-            type="text"
-            inputMode="decimal"
-            placeholder={MONEY_PLACEHOLDER}
-            className="h-11 md:h-9"
-            aria-invalid={priceError ? true : undefined}
-            aria-describedby={priceError ? `${PRICE_ID}-error` : undefined}
-            {...register("priceCents")}
-          />
-          {priceError ? (
-            <p id={`${PRICE_ID}-error`} className="text-sm text-destructive">
-              {priceError}
-            </p>
-          ) : null}
-        </div>
-      </div>
+      {preview !== null ? (
+        <section
+          aria-label={PREVIEW_LABEL}
+          aria-live="polite"
+          className="rounded-xl bg-muted/60 p-4 ring-1 ring-foreground/10"
+        >
+          <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">{COST_PREVIEW_LABEL}</dt>
+              <dd className="text-base font-semibold">
+                {formatBRL(preview.costCents)}
+              </dd>
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <dt className="text-muted-foreground">{MARGIN_PREVIEW_LABEL}</dt>
+              <dd className="text-base font-semibold">
+                {formatBRL(preview.marginCents)} (
+                {formatMarginPercentage(preview.marginBps)})
+              </dd>
+            </div>
+          </dl>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {MARGIN_DISCLAIMER}
+          </p>
+        </section>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">

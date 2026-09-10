@@ -20,6 +20,7 @@ import type {
   InsertProduct,
   ListProductsParams,
   ProductsRepositoryPort,
+  ProductUpdateResolver,
 } from "./products.service";
 
 export type ProductsRepository = ReturnType<typeof createProductsRepository>;
@@ -63,6 +64,7 @@ const toProduct = (row: ProductRow): Product => ({
   name: row.name,
   brandCode: row.brandCode,
   costCents: row.costCents,
+  purchaseDiscountBps: row.purchaseDiscountBps,
   priceCents: row.priceCents,
   stockQty: row.stockQty,
   lowStockThreshold: row.lowStockThreshold,
@@ -115,14 +117,39 @@ export const createProductsRepository = (
     consultantId: string,
     id: string,
     patch: UpdateProduct,
+    resolve: ProductUpdateResolver,
   ): Promise<Product | undefined> => {
-    const [row] = await db
-      .update(products)
-      .set(patch)
-      .where(and(eq(products.consultantId, consultantId), eq(products.id, id)))
-      .returning();
+    return db.transaction(async (tx) => {
+      const [currentRow] = await tx
+        .select()
+        .from(products)
+        .where(
+          and(eq(products.consultantId, consultantId), eq(products.id, id)),
+        )
+        .limit(1)
+        .for("update");
 
-    return row ? toProduct(row) : undefined;
+      if (!currentRow) {
+        return undefined;
+      }
+
+      const resolvedPatch = resolve(toProduct(currentRow), patch);
+      const [updatedRow] = await tx
+        .update(products)
+        .set(resolvedPatch)
+        .where(
+          and(eq(products.consultantId, consultantId), eq(products.id, id)),
+        )
+        .returning();
+
+      if (!updatedRow) {
+        throw new Error(
+          "Falha ao persistir produto: update não retornou linha",
+        );
+      }
+
+      return toProduct(updatedRow);
+    });
   };
 
   const remove = async (consultantId: string, id: string): Promise<boolean> => {

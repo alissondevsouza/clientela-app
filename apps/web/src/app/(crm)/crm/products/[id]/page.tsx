@@ -1,3 +1,4 @@
+import { calculateGrossMargin } from "@clientela/shared";
 import { ArrowLeft } from "lucide-react";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
@@ -9,6 +10,10 @@ import { ProductForm } from "@/components/products/product-form";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { loadWebEnv } from "@/lib/env";
 import { centsToReaisInput, formatBRL } from "@/lib/format";
+import {
+  formatMarginPercentage,
+  formatPercentage,
+} from "@/lib/product-pricing";
 import { getProduct } from "@/lib/products-api";
 import { cn } from "@/lib/utils";
 
@@ -20,12 +25,17 @@ const LIST_HREF = "/crm/products";
 const LOGIN_PATH = "/login";
 
 const BRAND_CODE_LABEL = "Código Mary Kay";
-const COST_LABEL = "Custo";
-const PRICE_LABEL = "Preço";
+const PRICE_LABEL = "Preço sugerido";
+const COST_MODE_LABEL = "Forma do custo";
+const COST_LABEL = "Custo atual";
+const MARGIN_LABEL = "Margem bruta estimada";
 const STOCK_LABEL = "Estoque";
 const LOW_STOCK_THRESHOLD_LABEL = "Alerta em";
 const LOW_STOCK_BADGE = "Estoque baixo";
 const NOT_INFORMED = "Não informado";
+const MANUAL_COST_MODE = "Informado diretamente";
+const MARGIN_DISCLAIMER =
+  "Estimativa bruta sobre o preço sugerido; não representa lucro líquido.";
 const UNIT_SINGULAR = "unidade";
 const UNIT_PLURAL = "unidades";
 
@@ -73,6 +83,11 @@ export default async function ProductDetailPage({
   }
 
   const { product } = result;
+  const margin = calculateGrossMargin(product.priceCents, product.costCents);
+  const costMode =
+    product.purchaseDiscountBps === null
+      ? MANUAL_COST_MODE
+      : `${formatPercentage(product.purchaseDiscountBps)} de desconto na compra`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -107,12 +122,28 @@ export default async function ProductDetailPage({
           <dd>{product.brandCode ?? NOT_INFORMED}</dd>
         </div>
         <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{PRICE_LABEL}</dt>
+          <dd>{formatBRL(product.priceCents)}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <dt className="text-muted-foreground">{COST_MODE_LABEL}</dt>
+          <dd>{costMode}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{COST_LABEL}</dt>
           <dd>{formatBRL(product.costCents)}</dd>
         </div>
         <div className="flex flex-col gap-0.5">
-          <dt className="text-muted-foreground">{PRICE_LABEL}</dt>
-          <dd>{formatBRL(product.priceCents)}</dd>
+          <dt className="text-muted-foreground">{MARGIN_LABEL}</dt>
+          <dd className="flex flex-col gap-0.5">
+            <span>
+              {formatBRL(margin.marginCents)} (
+              {formatMarginPercentage(margin.marginBps)})
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {MARGIN_DISCLAIMER}
+            </span>
+          </dd>
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{STOCK_LABEL}</dt>
@@ -134,6 +165,7 @@ export default async function ProductDetailPage({
           mode="edit"
           submitLabel={SAVE_LABEL}
           onSubmit={updateProductAction.bind(null, product.id)}
+          purchaseDiscountBps={product.purchaseDiscountBps}
           defaultValues={{
             name: product.name,
             brandCode: product.brandCode ?? "",

@@ -124,10 +124,15 @@ export {
   paginationQuerySchema,
 } from "./pagination";
 export {
+  BASIS_POINTS_PER_PERCENT,
   type CreateProduct,
   type CreateProductInput,
+  calculateDiscountedCostCents,
+  calculateGrossMargin,
   createProductSchema,
+  type GrossMargin,
   MONEY_MAX_CENTS,
+  PERCENT_BASIS_POINTS,
   type Product,
   type ProductsListQuery,
   type ProductsListQueryInput,
@@ -135,6 +140,7 @@ export {
   productSchema,
   productsListQuerySchema,
   productsSummarySchema,
+  purchaseDiscountBpsSchema,
   type UpdateProduct,
   type UpdateProductInput,
   updateProductSchema,

@@ -238,6 +238,7 @@ describe("orders (integração)", () => {
   type SeedProductValues = {
     name: string;
     costCents?: number;
+    purchaseDiscountBps?: number | null;
     priceCents: number;
     stockQty?: number;
   };
@@ -370,6 +371,20 @@ describe("orders (integração)", () => {
       new Request(`http://localhost/products/${id}`, {
         method: "GET",
         headers: bearer(token),
+      }),
+    );
+
+  const patchProduct = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/products/${id}`, {
+        method: "PATCH",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
       }),
     );
 
@@ -507,6 +522,52 @@ describe("orders (integração)", () => {
       expect(itemOverride?.productName).toBe("Base Líquida");
       expect(itemOverride?.qty).toBe(3);
       expect(itemOverride?.unitCostCents).toBe(1_800); // override respeitado
+    });
+
+    it("usa o custo calculado por desconto como default e não reescreve o snapshot do pedido após mudar a taxa", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Produto com Desconto",
+        costCents: 2_594,
+        purchaseDiscountBps: 3_500,
+        priceCents: 3_990,
+        stockQty: 5,
+      });
+
+      const firstOrder = await createOrderOk(
+        app,
+        { items: [{ productId, qty: 2 }] },
+        token,
+      );
+      expect(firstOrder.totalCents).toBe(5_188);
+      expect(firstOrder.items[0]?.unitCostCents).toBe(2_594);
+
+      const patchResponse = await patchProduct(
+        app,
+        productId,
+        { purchaseDiscountBps: 4_000 },
+        token,
+      );
+      expect(patchResponse.status).toBe(HTTP_OK);
+      const updatedProduct = productSchema.parse(await patchResponse.json());
+      expect(updatedProduct.costCents).toBe(2_394);
+      expect(updatedProduct.purchaseDiscountBps).toBe(4_000);
+
+      const persistedFirstOrder = await getOrderOk(app, firstOrder.id, token);
+      expect(persistedFirstOrder.totalCents).toBe(5_188);
+      expect(persistedFirstOrder.items[0]?.unitCostCents).toBe(2_594);
+
+      const secondOrder = await createOrderOk(
+        app,
+        { items: [{ productId, qty: 1 }] },
+        token,
+      );
+      expect(secondOrder.totalCents).toBe(2_394);
+      expect(secondOrder.items[0]?.unitCostCents).toBe(2_394);
     });
 
     it("item com productId inexistente ⇒ 422 e nada é persistido", async () => {

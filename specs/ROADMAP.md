@@ -84,6 +84,7 @@
 - [ ] **CRM-08** — Catálogo da landing alimentado pelos produtos do CRM (flag "destaque") — _dep: CRM-05_
 - [x] **CRM-09** → `specs/crm-orders` — Pedidos de reposição: controle do que a consultora precisa pedir à Mary Kay, com ciclo de status (rascunho → pedido → entregue / cancelado), itens vinculados a produtos, sugestão a partir do estoque baixo e entrada atômica de estoque na entrega — _dep: CRM-05_ — handoff 2026-07-20 (ADR-0015; QA APROVADO rodada 1, 784 testes)
 - [x] **CRM-10** → `specs/order-item-client-link` — Encomendas de clientes no pedido: vínculo opcional de cliente por item (join derivado, sem snapshot — ADR-0016), cadastro rápido de cliente no form (nome + WhatsApp) e visão "para quem é" no detalhe — _dep: CRM-03, CRM-09_ — handoff 2026-07-20 (ADR-0016; QA APROVADO rodada 1, 807 testes, runtime provado)
+- [R] **CRM-11** → `specs/product-purchase-discount` — Cadastro de produto com custo por desconto da consultora (atalhos 30%/35%/40% e custo manual), cálculo autoritativo no servidor e preservação de produtos legados — _dep: CRM-05, CRM-06, CRM-07, CRM-09_ — handoff 2026-09-09 (ADR-0022; QA APROVADO rodada 2, 1226 testes)
 
 ## Fase 3 — Relacionamento
 
@@ -91,7 +92,7 @@
 - [ ] **REL-02** — Lembretes de recompra: produto consumível comprado há X dias ⇒ sugestão de follow-up — _dep: CRM-06_
 - [ ] **REL-03** — Aniversariantes da semana/mês com mensagem pronta — _dep: CRM-03_
 - [ ] **REL-04** — Follow-up de leads parados (sem contato há N dias) — _dep: CRM-04_
-- [R] **REL-06** → `specs/crm-appointments` — Agenda de compromissos: sessões de demonstração/análise de pele, entrega e follow-up, com vínculo a cliente **e a lead** (a isca da landing é uma sessão), vínculo opcional à venda gerada ("essa sessão virou venda?"), vista mobile-first Hoje/Semana/Próximos, botão "Confirmar pelo WhatsApp" e link "Adicionar ao Google Agenda" (sem OAuth). Decisão de fuso horário da aplicação — _dep: CRM-03, CRM-04, CRM-06_ — **movido de MKT-03** (Fase 4) por decisão do humano em 2026-08-05: precede o REL-05, que deve agregar os compromissos do dia
+- [x] **REL-06** → `specs/crm-appointments` — Agenda de compromissos: sessões de demonstração/análise de pele, entrega e follow-up, com vínculo a cliente **e a lead** (a isca da landing é uma sessão), vínculo opcional à venda gerada ("essa sessão virou venda?"), vista mobile-first Hoje/Semana/Próximos, botão "Confirmar pelo WhatsApp" e link "Adicionar ao Google Agenda" (sem OAuth). Decisão de fuso horário da aplicação — _dep: CRM-03, CRM-04, CRM-06_ — **movido de MKT-03** (Fase 4) por decisão do humano em 2026-08-05: precede o REL-05, que deve agregar os compromissos do dia. **Em produção desde 2026-08-06** (PR #2, `730e4b9`) — primeiro deploy com mudança de schema protegido pelo snapshot pré-migração do INF-07
 - [ ] **REL-08** — Cadastro rápido: detectar pessoa duplicada pelo WhatsApp antes de criar (cliente ou lead) — _dep: REL-06_ — achado da QA do incremento em 2026-08-06: hoje nada impede criar a mesma pessoa duas vezes pelo formulário da agenda
 - [ ] **REL-05** — Central "com quem falar hoje": tela única agregando REL-02/03/04 **e os compromissos do dia (REL-06)**, cada item com botão WhatsApp com mensagem modelo — _dep: REL-02, REL-03, REL-04, REL-06_
 

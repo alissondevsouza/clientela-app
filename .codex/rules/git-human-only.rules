@@ -1,0 +1,33 @@
+# Defesa em profundidade para o ADR-0006. O hook sibling também inspeciona
+# comandos compostos e invocações com opções globais do Git.
+
+prefix_rule(
+    pattern = ["git", ["add", "am", "apply", "bisect", "branch", "checkout", "cherry-pick", "clean", "commit", "config", "fetch", "gc", "init", "merge", "mv", "notes", "pull", "push", "rebase", "remote", "reset", "restore", "rm", "stash", "submodule", "tag", "update-ref", "worktree"]],
+    decision = "forbidden",
+    justification = "Operações Git de escrita são exclusivas do humano (ADR-0006); deixe o trabalho no working tree.",
+    match = [
+        "git commit -m exemplo",
+        "git push origin feature/exemplo",
+        "git reset --hard HEAD",
+        "git add .",
+    ],
+    not_match = [
+        "git status --short",
+        "git diff --stat",
+        "git switch -c feature/exemplo",
+    ],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["create", "merge"]],
+    decision = "forbidden",
+    justification = "Criar ou mesclar PRs é responsabilidade do humano (ADR-0006).",
+    match = [
+        "gh pr create --title exemplo",
+        "gh pr merge 42",
+    ],
+    not_match = [
+        "gh pr view 42",
+        "gh pr checks 42",
+    ],
+)

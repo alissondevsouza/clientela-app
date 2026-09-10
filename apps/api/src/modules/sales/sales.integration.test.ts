@@ -94,12 +94,17 @@ const CONSULTANT_B = {
 // existe" e "não é sua" respondem o MESMO 404 (RF-04/RF-05/RF-06).
 const NONEXISTENT_UUID = "00000000-0000-4000-8000-000000000000";
 
-// Datas puras (yyyy-mm-dd) para vencimentos determinísticos. `FUTURE_...` é o
-// primeiro vencimento canônico do spec (dia 31 ⇒ clamp de mês sem drift). Como a
-// feature está sendo implementada em 2026-07, essas datas são futuras.
-const FIRST_DUE_DATE = "2026-08-31";
-const FIRST_DUE_DATE_M1 = "2026-09-30"; // clamp: setembro só tem 30 dias
-const FIRST_DUE_DATE_M2 = "2026-10-31"; // ancorado no dia 31 (sem drift para 28)
+// O próximo janeiro mantém o vencimento sempre futuro e preserva a prova de
+// clamp mensal: 31/jan ⇒ último dia de fevereiro ⇒ 31/mar, sem drift.
+const FIRST_DUE_YEAR = new Date().getFullYear() + 1;
+const FIRST_DUE_FEBRUARY_DAY =
+  (FIRST_DUE_YEAR % 4 === 0 && FIRST_DUE_YEAR % 100 !== 0) ||
+  FIRST_DUE_YEAR % 400 === 0
+    ? 29
+    : 28;
+const FIRST_DUE_DATE = `${FIRST_DUE_YEAR}-01-31`;
+const FIRST_DUE_DATE_M1 = `${FIRST_DUE_YEAR}-02-${FIRST_DUE_FEBRUARY_DAY}`;
+const FIRST_DUE_DATE_M2 = `${FIRST_DUE_YEAR}-03-31`;
 // Data claramente no passado: rejeitada pela fronteira (firstDueDate < ontem).
 const PAST_DUE_DATE = "2020-01-01";
 // due_dates de fixtures de recebíveis semeados diretamente.
@@ -272,6 +277,7 @@ describe("sales (integração)", () => {
   type SeedProductValues = {
     name: string;
     costCents?: number;
+    purchaseDiscountBps?: number | null;
     priceCents: number;
     stockQty?: number;
   };
@@ -447,6 +453,20 @@ describe("sales (integração)", () => {
       }),
     );
 
+  const patchProduct = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/products/${id}`, {
+        method: "PATCH",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
+      }),
+    );
+
   const deleteClient = (
     app: App,
     id: string,
@@ -566,7 +586,7 @@ describe("sales (integração)", () => {
       expect(await stockOf(app, productB, token)).toBe(4);
     });
 
-    it("grava cost_cents do produto em cada item (snapshot); mudar o custo do produto DEPOIS não altera o item já vendido (CRM-07/RF-02)", async () => {
+    it("congela no item o custo calculado por desconto; mudar a taxa do produto depois não altera a venda (CRM-11/RF-07)", async () => {
       const app = buildApp();
       const { consultantId, token } = await seedConsultantSession(
         app,
@@ -574,7 +594,8 @@ describe("sales (integração)", () => {
       );
       const productId = await seedProduct(consultantId, {
         name: "Perfume Floral",
-        costCents: 4_200,
+        costCents: 6_494,
+        purchaseDiscountBps: 3_500,
         priceCents: 9_990,
         stockQty: 10,
       });
@@ -594,19 +615,26 @@ describe("sales (integração)", () => {
         .select()
         .from(saleItems)
         .where(eq(saleItems.saleId, sale.id));
-      expect(itemRow?.costCents).toBe(4_200);
+      expect(itemRow?.costCents).toBe(6_494);
 
-      // Alterar o custo do produto DEPOIS não muda o snapshot já gravado.
-      await ctx.db
-        .update(products)
-        .set({ costCents: 9_000 })
-        .where(eq(products.id, productId));
+      // Alterar a taxa pela API recalcula o custo vivo do produto, mas não
+      // reescreve o snapshot de custo da venda já concluída.
+      const patchResponse = await patchProduct(
+        app,
+        productId,
+        { purchaseDiscountBps: 4_000 },
+        token,
+      );
+      expect(patchResponse.status).toBe(HTTP_OK);
+      const updatedProduct = productSchema.parse(await patchResponse.json());
+      expect(updatedProduct.costCents).toBe(5_994);
+      expect(updatedProduct.purchaseDiscountBps).toBe(4_000);
 
       const [itemAfterCostChange] = await ctx.db
         .select()
         .from(saleItems)
         .where(eq(saleItems.saleId, sale.id));
-      expect(itemAfterCostChange?.costCents).toBe(4_200);
+      expect(itemAfterCostChange?.costCents).toBe(6_494);
     });
   });
 

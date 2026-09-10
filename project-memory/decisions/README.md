@@ -30,6 +30,8 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0018](./0018-app-time-zone.md) | Fuso de referência da aplicação (`APP_TIME_ZONE = America/Sao_Paulo`), recorte de dia em TS | Aceito |
 | [0019](./0019-pre-deploy-db-snapshot.md) | Snapshot do banco antes da migração, fail-closed, no pipeline de deploy | Aceito |
 | [0020](./0020-crm-created-lead-consent.md) | Consentimento de lead criado pelo CRM (`source = "crm_manual"`) | Aceito |
+| [0021](./0021-shared-claude-codex-harness.md) | Harness compartilhado entre Claude Code e Codex | Aceito |
+| [0022](./0022-product-purchase-cost-mode.md) | Custo de produto manual ou derivado do desconto de compra | Aceito |
 
 ## Template
 

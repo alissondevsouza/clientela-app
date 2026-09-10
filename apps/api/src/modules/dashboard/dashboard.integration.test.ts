@@ -3,6 +3,7 @@ import {
   apiErrorSchema,
   dashboardSummarySchema,
   loginResponseSchema,
+  productSchema,
   receivablesSummarySchema,
 } from "@clientela/shared";
 import { eq } from "drizzle-orm";
@@ -306,6 +307,7 @@ describe("dashboard (integração)", () => {
   type SeedProductValues = {
     name: string;
     costCents: number;
+    purchaseDiscountBps?: number | null;
     priceCents: number;
     stockQty: number;
   };
@@ -355,6 +357,20 @@ describe("dashboard (integração)", () => {
     app.handle(
       new Request("http://localhost/sales", {
         method: "POST",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
+      }),
+    );
+
+  const patchProduct = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/products/${id}`, {
+        method: "PATCH",
         headers: jsonHeaders(token),
         body: JSON.stringify(body),
       }),
@@ -501,6 +517,54 @@ describe("dashboard (integração)", () => {
       // (3000 - 4000) * 1 = -1000.
       expect(summary.monthProfitCents).toBe(-1_000);
       expect(summary.monthSalesCents).toBe(3_000);
+    });
+
+    it("lucro permanece baseado no snapshot da venda após mudar o desconto do produto", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Produto com Desconto",
+        costCents: 6_494,
+        purchaseDiscountBps: 3_500,
+        priceCents: 9_990,
+        stockQty: 10,
+      });
+
+      const saleResponse = await postSale(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+        },
+        token,
+      );
+      expect(saleResponse.status).toBe(HTTP_CREATED);
+
+      const before = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(before.monthSalesCents).toBe(9_990);
+      expect(before.monthProfitCents).toBe(3_496);
+
+      const patchResponse = await patchProduct(
+        app,
+        productId,
+        { purchaseDiscountBps: 4_000 },
+        token,
+      );
+      expect(patchResponse.status).toBe(HTTP_OK);
+      const updatedProduct = productSchema.parse(await patchResponse.json());
+      expect(updatedProduct.costCents).toBe(5_994);
+      expect(updatedProduct.purchaseDiscountBps).toBe(4_000);
+
+      const after = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(after.monthSalesCents).toBe(9_990);
+      expect(after.monthProfitCents).toBe(3_496);
     });
 
     it("recebíveis do summary batem com o endpoint /receivables/summary existente", async () => {

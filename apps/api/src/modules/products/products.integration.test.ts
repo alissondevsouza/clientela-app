@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
   apiErrorSchema,
+  calculateDiscountedCostCents,
   loginResponseSchema,
   type Product,
   paginated,
@@ -141,6 +142,15 @@ const VALID_PRODUCT_BODY = {
   priceCents: 3990,
   stockQty: 8,
   lowStockThreshold: 3,
+} as const;
+
+const DISCOUNTED_PRODUCT_BODY = {
+  name: "Base com Desconto",
+  brandCode: "MK-5678",
+  priceCents: 9990,
+  purchaseDiscountBps: 3500,
+  stockQty: 4,
+  lowStockThreshold: 1,
 } as const;
 
 // Extrai o SQLSTATE de um erro do driver Postgres. O drizzle envolve o erro do
@@ -391,6 +401,7 @@ describe("products (integração)", () => {
       expect(created.name).toBe(VALID_PRODUCT_BODY.name);
       expect(created.brandCode).toBe(VALID_PRODUCT_BODY.brandCode);
       expect(created.costCents).toBe(VALID_PRODUCT_BODY.costCents);
+      expect(created.purchaseDiscountBps).toBeNull();
       expect(created.priceCents).toBe(VALID_PRODUCT_BODY.priceCents);
       expect(created.stockQty).toBe(VALID_PRODUCT_BODY.stockQty);
       expect(created.lowStockThreshold).toBe(
@@ -407,6 +418,7 @@ describe("products (integração)", () => {
       expect(list.perPage).toBe(DEFAULT_PER_PAGE);
       expect(list.data).toHaveLength(1);
       expect(list.data[0]?.id).toBe(created.id);
+      expect(list.data[0]?.purchaseDiscountBps).toBeNull();
 
       // GET :id 200 — mesma linha, idêntica ao retorno do POST.
       const detailResponse = await getProduct(app, created.id, token);
@@ -427,6 +439,7 @@ describe("products (integração)", () => {
       expect(patched.lowStock).toBe(true);
       expect(patched.name).toBe(created.name);
       expect(patched.costCents).toBe(created.costCents);
+      expect(patched.purchaseDiscountBps).toBeNull();
       expect(patched.priceCents).toBe(created.priceCents);
       expect(patched.lowStockThreshold).toBe(created.lowStockThreshold);
       expect(patched.id).toBe(created.id);
@@ -473,6 +486,265 @@ describe("products (integração)", () => {
       expect(created.lowStockThreshold).toBe(1);
       expect(created.lowStock).toBe(true);
       expect(created.brandCode).toBeNull();
+    });
+  });
+
+  describe("precificação autoritativa e concorrência (CRM-11/RF-02/RF-03/RF-04)", () => {
+    it("POST manual e por desconto persistem e expõem custo/taxa coerentes em criação, lista e detalhe", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+
+      const manualResponse = await postProduct(app, VALID_PRODUCT_BODY, token);
+      expect(manualResponse.status).toBe(HTTP_CREATED);
+      const manual = productSchema.parse(await manualResponse.json());
+      expect(manual).toMatchObject({
+        costCents: VALID_PRODUCT_BODY.costCents,
+        purchaseDiscountBps: null,
+        priceCents: VALID_PRODUCT_BODY.priceCents,
+      });
+
+      const discountedResponse = await postProduct(
+        app,
+        DISCOUNTED_PRODUCT_BODY,
+        token,
+      );
+      expect(discountedResponse.status).toBe(HTTP_CREATED);
+      const discounted = productSchema.parse(await discountedResponse.json());
+      expect(discounted).toMatchObject({
+        costCents: 6494,
+        purchaseDiscountBps: DISCOUNTED_PRODUCT_BODY.purchaseDiscountBps,
+        priceCents: DISCOUNTED_PRODUCT_BODY.priceCents,
+      });
+      expect(discounted.costCents).toBe(
+        calculateDiscountedCostCents(
+          DISCOUNTED_PRODUCT_BODY.priceCents,
+          DISCOUNTED_PRODUCT_BODY.purchaseDiscountBps,
+        ),
+      );
+
+      const listResponse = await getProducts(app, token);
+      expect(listResponse.status).toBe(HTTP_OK);
+      const list = productListSchema.parse(await listResponse.json());
+      expect(list.total).toBe(2);
+      expect(list.data.find((product) => product.id === manual.id)).toEqual(
+        manual,
+      );
+      expect(list.data.find((product) => product.id === discounted.id)).toEqual(
+        discounted,
+      );
+
+      const manualDetail = await getProduct(app, manual.id, token);
+      expect(manualDetail.status).toBe(HTTP_OK);
+      expect(productSchema.parse(await manualDetail.json())).toEqual(manual);
+
+      const discountedDetail = await getProduct(app, discounted.id, token);
+      expect(discountedDetail.status).toBe(HTTP_OK);
+      expect(productSchema.parse(await discountedDetail.json())).toEqual(
+        discounted,
+      );
+    });
+
+    it("PATCH alterna entre modos, recalcula pelo preço efetivo e preserva o custo manual", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+
+      const createResponse = await postProduct(
+        app,
+        {
+          name: "Produto com Transições",
+          costCents: 7200,
+          priceCents: 9990,
+          stockQty: 5,
+        },
+        token,
+      );
+      expect(createResponse.status).toBe(HTTP_CREATED);
+      const created = productSchema.parse(await createResponse.json());
+      expect(created.purchaseDiscountBps).toBeNull();
+
+      const enterDiscountResponse = await patchProduct(
+        app,
+        created.id,
+        { purchaseDiscountBps: 3750 },
+        token,
+      );
+      expect(enterDiscountResponse.status).toBe(HTTP_OK);
+      const enteredDiscount = productSchema.parse(
+        await enterDiscountResponse.json(),
+      );
+      expect(enteredDiscount.purchaseDiscountBps).toBe(3750);
+      expect(enteredDiscount.costCents).toBe(
+        calculateDiscountedCostCents(created.priceCents, 3750),
+      );
+
+      const newPriceCents = 12_345;
+      const priceResponse = await patchProduct(
+        app,
+        created.id,
+        { priceCents: newPriceCents },
+        token,
+      );
+      expect(priceResponse.status).toBe(HTTP_OK);
+      const repriced = productSchema.parse(await priceResponse.json());
+      expect(repriced.priceCents).toBe(newPriceCents);
+      expect(repriced.purchaseDiscountBps).toBe(3750);
+      expect(repriced.costCents).toBe(
+        calculateDiscountedCostCents(newPriceCents, 3750),
+      );
+
+      const discountedDetailResponse = await getProduct(app, created.id, token);
+      expect(discountedDetailResponse.status).toBe(HTTP_OK);
+      expect(
+        productSchema.parse(await discountedDetailResponse.json()),
+      ).toEqual(repriced);
+
+      const discountedListResponse = await getProducts(app, token);
+      expect(discountedListResponse.status).toBe(HTTP_OK);
+      const discountedList = productListSchema.parse(
+        await discountedListResponse.json(),
+      );
+      expect(
+        discountedList.data.find((product) => product.id === created.id),
+      ).toEqual(repriced);
+
+      const stockResponse = await patchProduct(
+        app,
+        created.id,
+        { stockQty: 2 },
+        token,
+      );
+      expect(stockResponse.status).toBe(HTTP_OK);
+      const stockUpdated = productSchema.parse(await stockResponse.json());
+      expect(stockUpdated.stockQty).toBe(2);
+      expect(stockUpdated.priceCents).toBe(repriced.priceCents);
+      expect(stockUpdated.costCents).toBe(repriced.costCents);
+      expect(stockUpdated.purchaseDiscountBps).toBe(
+        repriced.purchaseDiscountBps,
+      );
+
+      const directCostResponse = await patchProduct(
+        app,
+        created.id,
+        { costCents: 8000 },
+        token,
+      );
+      expect(directCostResponse.status).toBe(HTTP_OK);
+      const manual = productSchema.parse(await directCostResponse.json());
+      expect(manual.costCents).toBe(8000);
+      expect(manual.purchaseDiscountBps).toBeNull();
+
+      const manualPriceResponse = await patchProduct(
+        app,
+        created.id,
+        { priceCents: 15_000 },
+        token,
+      );
+      expect(manualPriceResponse.status).toBe(HTTP_OK);
+      const manualRepriced = productSchema.parse(
+        await manualPriceResponse.json(),
+      );
+      expect(manualRepriced.priceCents).toBe(15_000);
+      expect(manualRepriced.costCents).toBe(8000);
+      expect(manualRepriced.purchaseDiscountBps).toBeNull();
+
+      const discountAgainResponse = await patchProduct(
+        app,
+        created.id,
+        { purchaseDiscountBps: 4000 },
+        token,
+      );
+      expect(discountAgainResponse.status).toBe(HTTP_OK);
+      const discountAgain = productSchema.parse(
+        await discountAgainResponse.json(),
+      );
+      expect(discountAgain.costCents).toBe(9000);
+      expect(discountAgain.purchaseDiscountBps).toBe(4000);
+
+      const clearDiscountResponse = await patchProduct(
+        app,
+        created.id,
+        { purchaseDiscountBps: null },
+        token,
+      );
+      expect(clearDiscountResponse.status).toBe(HTTP_OK);
+      const clearedDiscount = productSchema.parse(
+        await clearDiscountResponse.json(),
+      );
+      expect(clearedDiscount.costCents).toBe(discountAgain.costCents);
+      expect(clearedDiscount.purchaseDiscountBps).toBeNull();
+
+      const detailResponse = await getProduct(app, created.id, token);
+      expect(detailResponse.status).toBe(HTTP_OK);
+      expect(productSchema.parse(await detailResponse.json())).toEqual(
+        clearedDiscount,
+      );
+    });
+
+    it("serializa PATCHes concorrentes de preço e taxa sem estado obsoleto ou 500", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+
+      const createResponse = await postProduct(
+        app,
+        {
+          name: "Produto concorrente",
+          priceCents: 10_000,
+          purchaseDiscountBps: 3000,
+        },
+        token,
+      );
+      expect(createResponse.status).toBe(HTTP_CREATED);
+      const created = productSchema.parse(await createResponse.json());
+      expect(created.costCents).toBe(7000);
+      expect(created.purchaseDiscountBps).toBe(3000);
+
+      const responses = await Promise.all([
+        patchProduct(app, created.id, { priceCents: 12_000 }, token),
+        patchProduct(app, created.id, { purchaseDiscountBps: 4000 }, token),
+      ]);
+
+      for (const response of responses) {
+        expect(response.status).toBe(HTTP_OK);
+        expect(response.status).not.toBe(HTTP_INTERNAL_ERROR);
+      }
+
+      const observed = await Promise.all(
+        responses.map(async (response) =>
+          productSchema.parse(await response.json()),
+        ),
+      );
+      for (const product of observed) {
+        expect(product.purchaseDiscountBps).not.toBeNull();
+        if (product.purchaseDiscountBps === null) {
+          throw new Error("esperava produto em modo desconto");
+        }
+        expect(product.costCents).toBe(
+          calculateDiscountedCostCents(
+            product.priceCents,
+            product.purchaseDiscountBps,
+          ),
+        );
+      }
+
+      const isFinalState = (product: Product): boolean =>
+        product.priceCents === 12_000 &&
+        product.purchaseDiscountBps === 4000 &&
+        product.costCents === 7200;
+      const isLegalIntermediateState = (product: Product): boolean =>
+        (product.priceCents === 12_000 &&
+          product.purchaseDiscountBps === 3000 &&
+          product.costCents === 8400) ||
+        (product.priceCents === 10_000 &&
+          product.purchaseDiscountBps === 4000 &&
+          product.costCents === 6000);
+
+      expect(observed.filter(isFinalState)).toHaveLength(1);
+      expect(observed.some(isLegalIntermediateState)).toBe(true);
+
+      const detailResponse = await getProduct(app, created.id, token);
+      expect(detailResponse.status).toBe(HTTP_OK);
+      const persisted = productSchema.parse(await detailResponse.json());
+      expect(isFinalState(persisted)).toBe(true);
     });
   });
 
@@ -535,6 +807,80 @@ describe("products (integração)", () => {
       const body = apiErrorSchema.parse(await response.json());
       expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
       expect(body.error.message).toMatch(/atualizar|campo/i);
+    });
+
+    it("POST com custo direto e desconto simultâneos ⇒ 422 pt-BR sem persistir", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+
+      const response = await postProduct(
+        app,
+        { ...VALID_PRODUCT_BODY, purchaseDiscountBps: 3500 },
+        token,
+      );
+      expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
+      const body = apiErrorSchema.parse(await response.json());
+      expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
+      expect(body.error.message).toMatch(/custo.*desconto|desconto.*custo/i);
+      expect(body.error.message).toMatch(/não os dois/i);
+      expect(body.error.message).not.toMatch(/expected|invalid input/i);
+
+      const list = productListSchema.parse(
+        await (await getProducts(app, token)).json(),
+      );
+      expect(list.total).toBe(0);
+    });
+
+    it("PATCH com custo direto e desconto não nulo simultâneos ⇒ 422 pt-BR e preserva o produto", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+      const created = await createValidProduct(app, token);
+
+      const response = await patchProduct(
+        app,
+        created.id,
+        { costCents: 999, purchaseDiscountBps: 3500 },
+        token,
+      );
+      expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
+      const body = apiErrorSchema.parse(await response.json());
+      expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
+      expect(body.error.message).toMatch(/custo.*desconto|desconto.*custo/i);
+      expect(body.error.message).toMatch(/não os dois/i);
+      expect(body.error.message).not.toMatch(/expected|invalid input/i);
+
+      const detailResponse = await getProduct(app, created.id, token);
+      expect(detailResponse.status).toBe(HTTP_OK);
+      expect(productSchema.parse(await detailResponse.json())).toEqual(created);
+    });
+
+    it("PATCH rejeita desconto fracionário e fora de 0..100% com 422 acionável em pt-BR", async () => {
+      const app = buildApp();
+      const { token } = await seedConsultantSession(app, CONSULTANT_A);
+      const created = await createValidProduct(app, token);
+      const invalidDiscounts = [
+        { value: 12.34, message: /pontos-base.*inteiro/i },
+        { value: -1, message: /desconto.*não pode ser negativo/i },
+        { value: 10_001, message: /desconto.*máximo 100%/i },
+      ] as const;
+
+      for (const invalid of invalidDiscounts) {
+        const response = await patchProduct(
+          app,
+          created.id,
+          { purchaseDiscountBps: invalid.value },
+          token,
+        );
+        expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
+        const body = apiErrorSchema.parse(await response.json());
+        expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
+        expect(body.error.message).toMatch(invalid.message);
+        expect(body.error.message).not.toMatch(/expected|invalid input/i);
+      }
+
+      const detailResponse = await getProduct(app, created.id, token);
+      expect(detailResponse.status).toBe(HTTP_OK);
+      expect(productSchema.parse(await detailResponse.json())).toEqual(created);
     });
 
     it("insert direto no banco com cost_cents -1 viola o CHECK (SQLSTATE 23514)", async () => {
@@ -962,29 +1308,51 @@ describe("products (integração)", () => {
   });
 
   describe("escopo multi-consultora (RF-03)", () => {
-    it("a sessão de A não lista produtos de B", async () => {
+    it("sessões listam apenas seus próprios produtos manual e por desconto", async () => {
       const app = buildApp();
-      const { consultantId: idA, token: tokenA } = await seedConsultantSession(
-        app,
-        CONSULTANT_A,
-      );
-      const { consultantId: idB } = await seedConsultantSession(
-        app,
-        CONSULTANT_B,
-      );
+      const { token: tokenA } = await seedConsultantSession(app, CONSULTANT_A);
+      const { token: tokenB } = await seedConsultantSession(app, CONSULTANT_B);
 
-      await seedProducts(idA, [
-        { name: "Produto da A", costCents: 100, priceCents: 200 },
-      ]);
-      await seedProducts(idB, [
-        { name: "Produto da B", costCents: 100, priceCents: 200 },
-      ]);
+      const productAResponse = await postProduct(
+        app,
+        { name: "Produto Manual da A", costCents: 100, priceCents: 200 },
+        tokenA,
+      );
+      expect(productAResponse.status).toBe(HTTP_CREATED);
+      const productA = productSchema.parse(await productAResponse.json());
 
-      const list = productListSchema.parse(
+      const productBResponse = await postProduct(
+        app,
+        {
+          name: "Produto com Desconto da B",
+          priceCents: 9990,
+          purchaseDiscountBps: 3500,
+        },
+        tokenB,
+      );
+      expect(productBResponse.status).toBe(HTTP_CREATED);
+      const productB = productSchema.parse(await productBResponse.json());
+
+      const listA = productListSchema.parse(
         await (await getProducts(app, tokenA)).json(),
       );
-      expect(list.total).toBe(1);
-      expect(list.data.map((p) => p.name)).toEqual(["Produto da A"]);
+      expect(listA.total).toBe(1);
+      expect(listA.data).toEqual([productA]);
+      expect(listA.data[0]?.purchaseDiscountBps).toBeNull();
+      expect(listA.data.map((product) => product.id)).not.toContain(
+        productB.id,
+      );
+
+      const listB = productListSchema.parse(
+        await (await getProducts(app, tokenB)).json(),
+      );
+      expect(listB.total).toBe(1);
+      expect(listB.data).toEqual([productB]);
+      expect(listB.data[0]?.purchaseDiscountBps).toBe(3500);
+      expect(listB.data[0]?.costCents).toBe(6494);
+      expect(listB.data.map((product) => product.id)).not.toContain(
+        productA.id,
+      );
     });
 
     it("GET/PATCH/DELETE do id de B com sessão A ⇒ 404 idêntico ao inexistente", async () => {
@@ -1000,7 +1368,8 @@ describe("products (integração)", () => {
         .values({
           consultantId: idB,
           name: "Produto da B",
-          costCents: 100,
+          costCents: 130,
+          purchaseDiscountBps: 3500,
           priceCents: 200,
         })
         .returning({ id: products.id });
@@ -1025,7 +1394,7 @@ describe("products (integração)", () => {
       const patchResponse = await patchProduct(
         app,
         productBId,
-        { name: "Invasão" },
+        { purchaseDiscountBps: 4000 },
         tokenA,
       );
       expect(patchResponse.status).toBe(HTTP_NOT_FOUND);
@@ -1043,6 +1412,8 @@ describe("products (integração)", () => {
       const survivors = await ctx.db.select().from(products);
       expect(survivors).toHaveLength(1);
       expect(survivors[0]?.name).toBe("Produto da B");
+      expect(survivors[0]?.costCents).toBe(130);
+      expect(survivors[0]?.purchaseDiscountBps).toBe(3500);
     });
   });
 

@@ -1,3 +1,4 @@
+import { PERCENT_BASIS_POINTS } from "@clientela/shared";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -12,6 +13,8 @@ import { consultants } from "./consultants";
 
 const DEFAULT_STOCK_QTY = 0;
 const DEFAULT_LOW_STOCK_THRESHOLD = 1;
+const PERCENT_BASIS_POINTS_SQL = sql.raw(String(PERCENT_BASIS_POINTS));
+const HALF_PERCENT_BASIS_POINTS_SQL = sql.raw(String(PERCENT_BASIS_POINTS / 2));
 
 export const products = pgTable(
   "products",
@@ -27,6 +30,7 @@ export const products = pgTable(
     brandCode: text("brand_code"),
     // Dinheiro sempre em centavos (integer) — nunca float (database.md/api.md).
     costCents: integer("cost_cents").notNull(),
+    purchaseDiscountBps: integer("purchase_discount_bps"),
     priceCents: integer("price_cents").notNull(),
     stockQty: integer("stock_qty").notNull().default(DEFAULT_STOCK_QTY),
     lowStockThreshold: integer("low_stock_threshold")
@@ -51,6 +55,14 @@ export const products = pgTable(
     check(
       "products_price_cents_check",
       sql`${table.priceCents} >= ${sql.raw("0")}`,
+    ),
+    check(
+      "products_purchase_discount_bps_range_check",
+      sql`${table.purchaseDiscountBps} >= ${sql.raw("0")} AND ${table.purchaseDiscountBps} <= ${PERCENT_BASIS_POINTS_SQL}`,
+    ),
+    check(
+      "products_discount_cost_consistency_check",
+      sql`${table.purchaseDiscountBps} IS NULL OR ${table.costCents} = ((${table.priceCents}::bigint * (${PERCENT_BASIS_POINTS_SQL} - ${table.purchaseDiscountBps}) + ${HALF_PERCENT_BASIS_POINTS_SQL}) / ${PERCENT_BASIS_POINTS_SQL})`,
     ),
     check(
       "products_stock_qty_check",

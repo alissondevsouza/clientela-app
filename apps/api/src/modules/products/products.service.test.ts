@@ -49,6 +49,7 @@ const createFakeRepository = (seed: StoredProduct[]) => {
         name: input.name,
         brandCode: input.brandCode ?? null,
         costCents: input.costCents,
+        purchaseDiscountBps: input.purchaseDiscountBps,
         priceCents: input.priceCents,
         stockQty,
         lowStockThreshold,
@@ -65,16 +66,17 @@ const createFakeRepository = (seed: StoredProduct[]) => {
       );
       return found ? toProduct(found) : undefined;
     },
-    update: async (consultantId, id, patch) => {
+    update: async (consultantId, id, patch, resolve) => {
       const target = store.find(
         (p) => p.consultantId === consultantId && p.id === id,
       );
       if (!target) {
         return undefined;
       }
+      const resolvedPatch = resolve(toProduct(target), patch);
       // Só aplica as chaves PRESENTES no patch (ausente = não alterar; `null`
-      // explícito em brandCode = limpar). Recalcula `lowStock` derivado.
-      Object.assign(target, patch, { updatedAt: FIXED_ISO });
+      // explícito em campos nullable = limpar). Recalcula `lowStock` derivado.
+      Object.assign(target, resolvedPatch, { updatedAt: FIXED_ISO });
       target.lowStock = target.stockQty <= target.lowStockThreshold;
       return toProduct(target);
     },
@@ -130,6 +132,7 @@ const storedProduct = (overrides: Partial<StoredProduct>): StoredProduct => {
     name: "Batom Vermelho",
     brandCode: null,
     costCents: 3550,
+    purchaseDiscountBps: null,
     priceCents: 5990,
     stockQty,
     lowStockThreshold,
@@ -157,6 +160,7 @@ describe("productsService.create", () => {
       name: "Base Líquida",
       brandCode: "MK-123",
       costCents: 4000,
+      purchaseDiscountBps: null,
       priceCents: 7900,
       stockQty: 5,
       lowStockThreshold: 2,
@@ -183,6 +187,22 @@ describe("productsService.create", () => {
     });
 
     expect(created.lowStock).toBe(true);
+  });
+
+  it("calcula o custo no servidor quando a criação informa desconto", async () => {
+    const { service } = buildService();
+
+    const created = await service.create(CONSULTANT_A, {
+      name: "Base com desconto",
+      purchaseDiscountBps: 3500,
+      priceCents: 9990,
+      stockQty: 0,
+      lowStockThreshold: 1,
+    });
+
+    expect(created.costCents).toBe(6494);
+    expect(created.purchaseDiscountBps).toBe(3500);
+    expect(created.priceCents).toBe(9990);
   });
 });
 
@@ -245,6 +265,155 @@ describe("productsService.update", () => {
     });
 
     expect(updated.brandCode).toBeNull();
+  });
+
+  it("taxa não nula entra em modo desconto e recalcula pelo preço atual", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 9990,
+      costCents: 7000,
+      purchaseDiscountBps: null,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      purchaseDiscountBps: 3500,
+    });
+
+    expect(updated.priceCents).toBe(9990);
+    expect(updated.costCents).toBe(6494);
+    expect(updated.purchaseDiscountBps).toBe(3500);
+  });
+
+  it("preço e taxa simultâneos calculam o custo pelo novo par", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 5000,
+      costCents: 3000,
+      purchaseDiscountBps: 4000,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      priceCents: 9990,
+      purchaseDiscountBps: 3500,
+    });
+
+    expect(updated.priceCents).toBe(9990);
+    expect(updated.costCents).toBe(6494);
+    expect(updated.purchaseDiscountBps).toBe(3500);
+  });
+
+  it("custo direto muda um produto com desconto para o modo manual", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 9990,
+      costCents: 6494,
+      purchaseDiscountBps: 3500,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      costCents: 7100,
+    });
+
+    expect(updated.priceCents).toBe(9990);
+    expect(updated.costCents).toBe(7100);
+    expect(updated.purchaseDiscountBps).toBeNull();
+  });
+
+  it("taxa nula desativa o modo desconto e preserva o custo atual", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 9990,
+      costCents: 6494,
+      purchaseDiscountBps: 3500,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      purchaseDiscountBps: null,
+    });
+
+    expect(updated.priceCents).toBe(9990);
+    expect(updated.costCents).toBe(6494);
+    expect(updated.purchaseDiscountBps).toBeNull();
+  });
+
+  it("preço isolado recalcula o custo quando o produto está em modo desconto", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 10_000,
+      costCents: 6500,
+      purchaseDiscountBps: 3500,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      priceCents: 12_000,
+    });
+
+    expect(updated.priceCents).toBe(12_000);
+    expect(updated.costCents).toBe(7800);
+    expect(updated.purchaseDiscountBps).toBe(3500);
+  });
+
+  it("preço isolado preserva o custo quando o produto está em modo manual", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 10_000,
+      costCents: 7000,
+      purchaseDiscountBps: null,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      priceCents: 12_000,
+    });
+
+    expect(updated.priceCents).toBe(12_000);
+    expect(updated.costCents).toBe(7000);
+    expect(updated.purchaseDiscountBps).toBeNull();
+  });
+
+  it("preço com taxa nula preserva o custo e encerra o modo desconto", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 10_000,
+      costCents: 6500,
+      purchaseDiscountBps: 3500,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      priceCents: 12_000,
+      purchaseDiscountBps: null,
+    });
+
+    expect(updated.priceCents).toBe(12_000);
+    expect(updated.costCents).toBe(6500);
+    expect(updated.purchaseDiscountBps).toBeNull();
+  });
+
+  it("PATCH não financeiro preserva preço, custo e taxa", async () => {
+    const product = storedProduct({
+      id: "id-1",
+      priceCents: 10_000,
+      costCents: 6500,
+      purchaseDiscountBps: 3500,
+      stockQty: 10,
+      lowStockThreshold: 2,
+    });
+    const { service } = buildService([product]);
+
+    const updated = await service.update(CONSULTANT_A, "id-1", {
+      stockQty: 1,
+    });
+
+    expect(updated.stockQty).toBe(1);
+    expect(updated.priceCents).toBe(10_000);
+    expect(updated.costCents).toBe(6500);
+    expect(updated.purchaseDiscountBps).toBe(3500);
   });
 
   it("lança ProductNotFoundError quando o produto não existe no escopo", async () => {
