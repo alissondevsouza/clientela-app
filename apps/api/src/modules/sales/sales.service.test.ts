@@ -1,6 +1,6 @@
 import type { CreateSale } from "@clientela/shared";
 import { describe, expect, it } from "vitest";
-import { InvalidSaleCreditError } from "./sales.errors";
+import { InvalidSaleCreditError, InvalidSaleDateError } from "./sales.errors";
 import {
   composeSaleCreation,
   derivePaymentProjection,
@@ -9,7 +9,10 @@ import {
 } from "./sales.service";
 
 const PRODUCT_ID = "11111111-1111-7111-8111-111111111111";
+// 2026-09-10T02:30:00.000Z = 2026-09-09 23:30 BRT (fuso da aplicação):
+// dia local de "hoje" para efeito dos testes é "2026-09-09".
 const TRANSACTION_NOW = new Date("2026-09-10T02:30:00.000Z");
+const TODAY_LOCAL_DATE = "2026-09-09";
 
 const product = (priceCents = 10_000): SaleProductSnapshot => ({
   id: PRODUCT_ID,
@@ -284,6 +287,146 @@ describe("composeSaleCreation", () => {
     expect(receivable?.createdAt).toBe(TRANSACTION_NOW);
     expect(receivable?.updatedAt).toBe(TRANSACTION_NOW);
     expect(receivable?.paidAt).toBe(TRANSACTION_NOW);
+  });
+});
+
+describe("composeSaleCreation — data retroativa (RF-02/RF-03/RF-04/RF-05)", () => {
+  const PAST_LOCAL_DATE = "2026-08-15";
+  // 12:00 BRT (fuso fixo, sem DST em 2026) = 15:00 UTC.
+  const PAST_SALE_INSTANT = new Date("2026-08-15T15:00:00.000Z");
+
+  it("soldOn ausente preserva transactionNow exatamente (caminho quente)", () => {
+    const composed = composeSaleCreation(
+      input({ deliveryStatus: "delivered" }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(composed.sale.soldAt).toBe(TRANSACTION_NOW);
+    expect(composed.sale.deliveredAt).toBe(TRANSACTION_NOW);
+    expect(composed.sale.completedAt).toBe(TRANSACTION_NOW);
+  });
+
+  it("soldOn igual ao dia local de hoje preserva transactionNow exatamente", () => {
+    const composed = composeSaleCreation(
+      input({ soldOn: TODAY_LOCAL_DATE, deliveryStatus: "delivered" }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(composed.sale.soldAt).toBe(TRANSACTION_NOW);
+    expect(composed.sale.deliveredAt).toBe(TRANSACTION_NOW);
+    expect(composed.sale.completedAt).toBe(TRANSACTION_NOW);
+  });
+
+  it("soldOn passado grava soldAt ao meio-dia local do dia escolhido (fuso da aplicação, não UTC)", () => {
+    const composed = composeSaleCreation(
+      input({ soldOn: PAST_LOCAL_DATE }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(composed.sale.soldAt).toEqual(PAST_SALE_INSTANT);
+  });
+
+  it("venda retroativa entregue: delivered_at e completed_at acompanham soldAt; created_at/updated_at continuam no relógio", () => {
+    const composed = composeSaleCreation(
+      input({ soldOn: PAST_LOCAL_DATE, deliveryStatus: "delivered" }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(composed.sale.soldAt).toEqual(PAST_SALE_INSTANT);
+    expect(composed.sale.deliveredAt).toEqual(PAST_SALE_INSTANT);
+    expect(composed.sale.completedAt).toEqual(PAST_SALE_INSTANT);
+    expect(composed.sale.createdAt).toBe(TRANSACTION_NOW);
+    expect(composed.sale.updatedAt).toBe(TRANSACTION_NOW);
+  });
+
+  it("soldOn futuro (relativo ao dia local de transactionNow) lança InvalidSaleDateError", () => {
+    expect(() =>
+      composeSaleCreation(
+        input({ soldOn: "2026-09-10" }),
+        [product()],
+        TRANSACTION_NOW,
+      ),
+    ).toThrow(InvalidSaleDateError);
+  });
+
+  it.each([
+    {
+      name: "recebido (à vista)",
+      condition: { paymentCondition: "received" as const },
+    },
+    {
+      name: "a receber na entrega",
+      condition: {
+        paymentCondition: "on_delivery" as const,
+        deliveryStatus: "delivered" as const,
+      },
+    },
+    {
+      name: "parcelado",
+      condition: {
+        paymentMethod: "pix" as const,
+        paymentCondition: "installments" as const,
+        installments: 2,
+        firstDueDate: PAST_LOCAL_DATE,
+      },
+    },
+  ])(
+    "venda retroativa $name: cobrança sintética acompanha a data da venda",
+    ({ condition }) => {
+      const composed = composeSaleCreation(
+        input({ soldOn: PAST_LOCAL_DATE, ...condition }),
+        [product()],
+        TRANSACTION_NOW,
+      );
+
+      for (const receivable of composed.receivables) {
+        expect(receivable.createdAt).toBe(TRANSACTION_NOW);
+        expect(receivable.updatedAt).toBe(TRANSACTION_NOW);
+      }
+    },
+  );
+
+  it("venda retroativa recebida: due_date/paid_at na data da venda; venda de hoje: due_date/paid_at hoje", () => {
+    const retroactive = composeSaleCreation(
+      input({ soldOn: PAST_LOCAL_DATE, paymentCondition: "received" }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+    const today = composeSaleCreation(
+      input({ paymentCondition: "received" }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(retroactive.receivables[0]).toMatchObject({
+      dueDate: PAST_LOCAL_DATE,
+      paidAt: PAST_SALE_INSTANT,
+    });
+    expect(today.receivables[0]).toMatchObject({
+      dueDate: TODAY_LOCAL_DATE,
+      paidAt: TRANSACTION_NOW,
+    });
+  });
+
+  it("venda retroativa a receber na entrega (entregue): due_date na data da venda, paid_at continua nulo", () => {
+    const composed = composeSaleCreation(
+      input({
+        soldOn: PAST_LOCAL_DATE,
+        paymentCondition: "on_delivery",
+        deliveryStatus: "delivered",
+      }),
+      [product()],
+      TRANSACTION_NOW,
+    );
+
+    expect(composed.receivables[0]).toMatchObject({
+      dueDate: PAST_LOCAL_DATE,
+      paidAt: null,
+    });
   });
 });
 

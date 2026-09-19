@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   cancelSale,
   createSale,
+  deleteSale,
   getReceivablesSummary,
   getSale,
   listReceivables,
@@ -470,6 +471,72 @@ describe("cancelSale", () => {
     });
 
     const result = await cancelSale(SALE_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.message).toMatch(/conexão/i);
+  });
+});
+
+describe("deleteSale", () => {
+  it("faz DELETE /sales/:id com Bearer; 204 sem corpo retorna ok", async () => {
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(null, { status: 204 }),
+    );
+
+    const result = await deleteSale(SALE_ID, depsWith(fetchImpl));
+
+    expect(result).toEqual({ ok: true });
+    expect(calls[0]?.init?.method).toBe("DELETE");
+    expect(headerValue(calls[0]?.init, "authorization")).toBe(
+      `Bearer ${TOKEN}`,
+    );
+    expect(calls[0]?.url).toBe(`http://localhost:3001/sales/${SALE_ID}`);
+  });
+
+  it("marca notFound em 404 (inclui cross-tenant)", async () => {
+    const { fetchImpl } = stubFetch(
+      () =>
+        new Response(errorEnvelope("SALE_NOT_FOUND", "não encontrada"), {
+          status: 404,
+        }),
+    );
+
+    const result = await deleteSale(SALE_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.notFound).toBe(true);
+  });
+
+  it("retorna a mensagem da API em erro genérico (status inesperado)", async () => {
+    const { fetchImpl } = stubFetch(
+      () =>
+        new Response(errorEnvelope("INTERNAL", "Erro interno"), {
+          status: 500,
+        }),
+    );
+
+    const result = await deleteSale(SALE_ID, depsWith(fetchImpl));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("esperado falha");
+    }
+    expect(result.notFound).toBe(false);
+    expect(result.message).toBe("Erro interno");
+  });
+
+  it("retorna mensagem genérica quando a rede falha", async () => {
+    const { fetchImpl } = stubFetch(() => {
+      throw new Error("network down");
+    });
+
+    const result = await deleteSale(SALE_ID, depsWith(fetchImpl));
 
     expect(result.ok).toBe(false);
     if (result.ok) {

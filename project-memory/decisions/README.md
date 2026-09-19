@@ -22,7 +22,7 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0010](./0010-github-actions-deploy.md) | CI + deploy contínuo via GitHub Actions (substitui o deploy manual do ADR-0008) | Aceito (mecanismo de entrega substituído pelo ADR-0011) |
 | [0011](./0011-ghcr-image-deploy.md) | Deploy por imagens via GHCR (modelo pull; VPS só recebe infra) | Aceito |
 | [0012](./0012-session-auth-strategy.md) | Autenticação do CRM: sessão própria DB-backed com token opaco | Aceito |
-| [0013](./0013-sales-snapshot-set-null.md) | Vendas imutáveis: snapshot + FK SET NULL (LGPD × histórico) | Aceito |
+| [0013](./0013-sales-snapshot-set-null.md) | Vendas imutáveis: snapshot + FK SET NULL (LGPD × histórico) | Aceito (item 3, "sem edição de venda: apenas cancelamento", emendado pelo ADR-0024) |
 | [0014](./0014-cost-snapshot-estimated-profit.md) | Lucro estimado por snapshot de custo na venda (+ meta mensal e summary agregado) | Aceito |
 | [0015](./0015-orders-lifecycle-concurrency.md) | Pedidos: transições por endpoints explícitos; exclusividade só onde há efeito colateral | Aceito |
 | [0016](./0016-personal-data-snapshot-boundary.md) | Snapshot de dado pessoal só com fundamento; sem fundamento, join + apagamento propagado | Aceito |
@@ -32,7 +32,9 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0020](./0020-crm-created-lead-consent.md) | Consentimento de lead criado pelo CRM (`source = "crm_manual"`) | Aceito |
 | [0021](./0021-shared-claude-codex-harness.md) | Harness compartilhado entre Claude Code e Codex | Aceito |
 | [0022](./0022-product-purchase-cost-mode.md) | Custo de produto manual ou derivado do desconto de compra | Aceito |
-| [0023](./0023-sale-lifecycle-and-payment-plans.md) | Ciclo de venda em aberto, planos de pagamento e reserva de estoque | Aceito |
+| [0023](./0023-sale-lifecycle-and-payment-plans.md) | Ciclo de venda em aberto, planos de pagamento e reserva de estoque | Aceito ("Tempo canônico do banco" e "Faturamento por conclusão" emendados pelo ADR-0025) |
+| [0024](./0024-sale-deletion-by-consultant.md) | Exclusão de venda pela consultora (emenda "venda não se apaga") | Aceito |
+| [0025](./0025-business-dates-and-sold-at-revenue.md) | Datas de negócio informadas pela usuária e faturamento por `sold_at` | Aceito |
 
 ## Template
 

@@ -59,10 +59,13 @@ export const receivables = pgTable(
       sql`(${table.dueKind} = 'scheduled' AND ${table.dueDate} IS NOT NULL)
         OR (${table.dueKind} IN ('on_delivery', 'unknown') AND ${table.dueDate} IS NULL)`,
     ),
+    // Não restringe created_at <= paid_at: cobrança de venda retroativa nasce
+    // hoje com paid_at na data da venda, no passado (RF-05/plan.md). O guard
+    // de coerência que sobra é paid_at <= updated_at.
     check(
       "receivables_temporal_matrix_check",
       sql`${table.createdAt} <= ${table.updatedAt}
-        AND (${table.paidAt} IS NULL OR (${table.createdAt} <= ${table.paidAt} AND ${table.paidAt} <= ${table.updatedAt}))
+        AND (${table.paidAt} IS NULL OR ${table.paidAt} <= ${table.updatedAt})
         AND (${table.voidedAt} IS NULL OR (${table.createdAt} <= ${table.voidedAt} AND ${table.voidedAt} <= ${table.updatedAt}))
         AND NOT (${table.paidAt} IS NOT NULL AND ${table.voidedAt} IS NOT NULL)`,
     ),

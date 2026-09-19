@@ -6,7 +6,7 @@
 //   SaleNotFoundError / ReceivableNotFoundError            → 404
 //   InsufficientStockError / SaleStateError                → 409
 //   InvalidSaleItemError / InvalidSaleCreditError /
-//   InvalidSaleClientError                                 → 422
+//   InvalidSaleClientError / InvalidSaleDateError          → 422
 
 // Venda inexistente ou id que não casa nenhuma linha no escopo da consultora →
 // 404. O mesmo 404 cobre "não existe" e "não é sua" (não vaza existência).
@@ -82,5 +82,18 @@ export class InvalidSaleClientError extends Error {
   constructor() {
     super(INVALID_SALE_CLIENT_MESSAGE);
     this.name = "InvalidSaleClientError";
+  }
+}
+
+// Data da venda no futuro (422): guarda AUTORITATIVA (RF-02), comparada com o
+// dia local de `transactionNow` (relógio do Postgres) dentro do service — o
+// Zod só dá feedback de UI e o CHECK do banco não pode chamar `now()`. O
+// relógio do cliente é forjável; este é o ponto que realmente barra.
+const INVALID_SALE_DATE_MESSAGE = "A data da venda não pode ser no futuro.";
+
+export class InvalidSaleDateError extends Error {
+  constructor() {
+    super(INVALID_SALE_DATE_MESSAGE);
+    this.name = "InvalidSaleDateError";
   }
 }

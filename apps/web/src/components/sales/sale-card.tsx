@@ -2,7 +2,7 @@ import { PAYMENT_METHOD_LABELS, type SaleListItem } from "@clientela/shared";
 import Link from "next/link";
 import { SaleStatusBadge } from "@/components/sales/sale-status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatBRL, formatDateBr } from "@/lib/format";
+import { formatBRL, formatLocalDateBr } from "@/lib/format";
 import { saleLifecycleSubtitle } from "@/lib/sale-lifecycle";
 
 const TOTAL_LABEL = "Total";
@@ -10,16 +10,8 @@ const PAYMENT_LABEL = "Pagamento";
 const SOLD_AT_LABEL = "Data";
 const OUTSTANDING_LABEL = "Falta receber";
 const NO_CLIENT_TEXT = "—";
-const ISO_DATE_TIME_SEPARATOR = "T";
 
 const saleDetailHref = (id: string): string => `/crm/sales/${id}`;
-
-// `soldAt` chega como ISO datetime (ex.: `2026-07-18T12:00:00.000Z`); a UI mostra
-// só a data (dd/mm/aaaa). `formatDateBr` espera `yyyy-mm-dd`, então extraímos a
-// parte da data antes do `T`. Fallback ao valor cru se o formato fugir do
-// esperado (`formatDateBr` é fail-safe de todo modo).
-const toDatePart = (isoDateTime: string): string =>
-  isoDateTime.split(ISO_DATE_TIME_SEPARATOR)[0] ?? isoDateTime;
 
 // Card da listagem de vendas (RSC): cliente (snapshot; "—" quando ausente) como
 // link para o detalhe, total formatado (R$), forma de pagamento pt-BR, data e
@@ -43,7 +35,7 @@ export function SaleCard({ sale }: { sale: SaleListItem }) {
             </Link>
           </CardTitle>
           <p className="text-sm text-muted-foreground">
-            {SOLD_AT_LABEL}: {formatDateBr(toDatePart(sale.soldAt))}
+            {SOLD_AT_LABEL}: {formatLocalDateBr(sale.soldAt)}
           </p>
         </div>
         <SaleStatusBadge status={sale.status} />

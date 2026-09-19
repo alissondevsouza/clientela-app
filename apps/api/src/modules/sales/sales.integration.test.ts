@@ -1,6 +1,8 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
   apiErrorSchema,
+  appLocalDateIso,
+  appLocalDateTimeToUtc,
   loginResponseSchema,
   paginated,
   productSchema,
@@ -19,6 +21,7 @@ import {
 } from "../../../test/helpers/pg-container";
 import { createApp } from "../../app";
 import {
+  appointments,
   clients,
   consultants,
   products,
@@ -107,10 +110,30 @@ const FIRST_DUE_DATE_M1 = `${FIRST_DUE_YEAR}-02-${FIRST_DUE_FEBRUARY_DAY}`;
 const FIRST_DUE_DATE_M2 = `${FIRST_DUE_YEAR}-03-31`;
 // Data claramente no passado: rejeitada pela fronteira (firstDueDate < ontem).
 const PAST_DUE_DATE = "2020-01-01";
+// Data da venda retroativa (Milestone 3): sempre no passado, relativa ao ano
+// corrente (evita fixar um literal que "expira" com o tempo, mesmo padrão de
+// FIRST_DUE_YEAR acima). Posterior a SOLD_ON_MIN_DATE (2015-01-01).
+const RETROACTIVE_SALE_YEAR = new Date().getFullYear() - 1;
+const RETROACTIVE_SALE_DATE = `${RETROACTIVE_SALE_YEAR}-03-15`;
+// Vencimento entre a data da venda retroativa e hoje (RF-06): aceito.
+const RETROACTIVE_FIRST_DUE_DATE = `${RETROACTIVE_SALE_YEAR}-04-01`;
+// Vencimento anterior à data da venda retroativa (RF-06): rejeitado.
+const BEFORE_RETROACTIVE_SALE_DUE_DATE = `${RETROACTIVE_SALE_YEAR}-03-01`;
+// Dois dias à frente em UTC é "futuro" em qualquer fuso local plausível
+// (offsets reais nunca chegam a ±48h) — usado para a guarda de data futura
+// (RF-02), sem depender de fuso do processo de teste.
+const FUTURE_SALE_DATE = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000)
+  .toISOString()
+  .slice(0, 10);
 // due_dates de fixtures de recebíveis semeados diretamente.
 const OVERDUE_DATE_EARLY = "2020-01-01";
 const OVERDUE_DATE_LATE = "2020-06-01";
 const FUTURE_DATE = "2027-03-01";
+// RF-13: mais de 400 dias atrás garante "mais de um ano" independentemente de
+// quando a suíte roda (sem fixar um literal que "expira" com o tempo).
+const OLD_SALE_DATE = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000)
+  .toISOString()
+  .slice(0, 10);
 
 const salesListSchema = paginated(saleListItemSchema);
 const receivablesListSchema = paginated(receivableListItemSchema);
@@ -471,6 +494,40 @@ describe("sales (integração)", () => {
       }),
     );
 
+  const deleteSale = (
+    app: App,
+    id: string,
+    token?: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/sales/${id}`, {
+        method: "DELETE",
+        headers: token ? bearer(token) : {},
+      }),
+    );
+
+  // Compromisso vinculado a uma venda, semeado direto (RF-11): o comportamento
+  // sob teste é a exclusão da venda, não o POST /appointments.
+  const seedAppointmentLinkedToSale = async (
+    consultantId: string,
+    saleId: string,
+  ): Promise<string> => {
+    const [row] = await ctx.db
+      .insert(appointments)
+      .values({
+        consultantId,
+        saleId,
+        kind: "delivery",
+        startsAt: new Date(),
+        durationMinutes: 30,
+      })
+      .returning({ id: appointments.id });
+    if (!row) {
+      throw new Error("falha ao semear o compromisso de teste");
+    }
+    return row.id;
+  };
+
   const getReceivables = (
     app: App,
     token: string,
@@ -700,6 +757,251 @@ describe("sales (integração)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // RF-02/RF-03/RF-04/RF-05/RF-06 — data retroativa da venda (Milestone 3)
+  // -------------------------------------------------------------------------
+  describe("data retroativa da venda (RF-02/RF-03/RF-04/RF-05/RF-06)", () => {
+    it("soldOn = hoje grava sold_at igual ao instante da transação (caso 1)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Batom",
+        priceCents: 3_000,
+        stockQty: 5,
+      });
+      const todayLocal = appLocalDateIso(new Date().toISOString());
+
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: todayLocal,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+
+      // Caminho quente byte a byte idêntico ao atual: todos os terminais vêm
+      // do MESMO transaction_timestamp() do Postgres.
+      expect(sale.soldAt).toBe(sale.createdAt);
+      expect(sale.deliveredAt).toBe(sale.createdAt);
+      expect(sale.completedAt).toBe(sale.createdAt);
+    });
+
+    it("soldOn passado grava sold_at ao meio-dia local do dia escolhido, fora do fuso do servidor (caso 2)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Delineador",
+        priceCents: 2_500,
+        stockQty: 5,
+      });
+
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+
+      const expectedInstant = appLocalDateTimeToUtc(
+        RETROACTIVE_SALE_DATE,
+        "12:00",
+      );
+      expect(sale.soldAt).toBe(expectedInstant);
+      // created_at continua o instante real da criação, não o da venda.
+      expect(sale.createdAt).not.toBe(sale.soldAt);
+      expect(appLocalDateIso(sale.createdAt)).toBe(
+        appLocalDateIso(new Date().toISOString()),
+      );
+    });
+
+    it("venda retroativa entregue persiste satisfazendo sales_temporal_matrix_check (caso 3)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Rímel",
+        priceCents: 4_500,
+        stockQty: 5,
+      });
+
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+
+      // O INSERT só teria sucesido (201, sem 500) se o CHECK temporal
+      // aceitasse created_at > sold_at (0014_brief_lifeguard) — prova viva do
+      // caso 3, não apenas a leitura dos campos.
+      expect(sale.deliveredAt).toBe(sale.soldAt);
+      expect(sale.status).toBe("completed");
+      expect(sale.completedAt).toBe(sale.soldAt);
+      expect(await stockOf(app, productId, token)).toBe(4);
+    });
+
+    it("venda retroativa à vista gera cobrança com paid_at/due_date na data da venda (caso 4)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Pó Compacto",
+        priceCents: 6_000,
+        stockQty: 5,
+      });
+
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "received",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+
+      expect(sale.receivables).toHaveLength(1);
+      expect(sale.receivables[0]).toMatchObject({
+        dueDate: RETROACTIVE_SALE_DATE,
+        paidAt: sale.soldAt,
+      });
+    });
+
+    it("venda retroativa a receber na entrega compõe cobrança coerente com a data da venda", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Esmalte",
+        priceCents: 1_500,
+        stockQty: 5,
+      });
+
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+
+      expect(sale.receivables).toHaveLength(1);
+      expect(sale.receivables[0]).toMatchObject({
+        dueDate: RETROACTIVE_SALE_DATE,
+        paidAt: null,
+      });
+    });
+
+    it("venda retroativa parcelada com firstDueDate entre a venda e hoje é aceita; anterior à venda é 422 (caso 5)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const acceptedProductId = await seedProduct(consultantId, {
+        name: "Kit Presente",
+        priceCents: 20_000,
+        stockQty: 5,
+      });
+      const rejectedProductId = await seedProduct(consultantId, {
+        name: "Kit Presente 2",
+        priceCents: 20_000,
+        stockQty: 5,
+      });
+
+      const accepted = await createSaleOk(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId: acceptedProductId, qty: 1 }],
+          paymentMethod: "credit",
+          installments: 2,
+          firstDueDate: RETROACTIVE_FIRST_DUE_DATE,
+        },
+        token,
+      );
+      expect(accepted.receivables.map((r) => r.dueDate)[0]).toBe(
+        RETROACTIVE_FIRST_DUE_DATE,
+      );
+
+      const rejected = await postSale(
+        app,
+        {
+          soldOn: RETROACTIVE_SALE_DATE,
+          items: [{ productId: rejectedProductId, qty: 1 }],
+          paymentMethod: "credit",
+          installments: 2,
+          firstDueDate: BEFORE_RETROACTIVE_SALE_DUE_DATE,
+        },
+        token,
+      );
+      expect(rejected.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
+      const rejectedBody = apiErrorSchema.parse(await rejected.json());
+      expect(rejectedBody.error.code).toBe(VALIDATION_ERROR_CODE);
+      expect(rejectedBody.error.message).toMatch(/anterior à data da venda/i);
+    });
+
+    it("soldOn futuro é rejeitado com 422 pela guarda autoritativa do relógio do servidor (caso 6)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Hidratante",
+        priceCents: 3_500,
+        stockQty: 5,
+      });
+
+      const response = await postSale(
+        app,
+        {
+          soldOn: FUTURE_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+        },
+        token,
+      );
+
+      expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
+      const body = apiErrorSchema.parse(await response.json());
+      expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
+      expect(body.error.message).toMatch(/futuro/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // RF-03 — concorrência de estoque e atomicidade
   // -------------------------------------------------------------------------
   describe("estoque: concorrência e atomicidade (RF-03)", () => {
@@ -915,7 +1217,7 @@ describe("sales (integração)", () => {
       expect(response.status).toBe(HTTP_UNPROCESSABLE_ENTITY);
       const body = apiErrorSchema.parse(await response.json());
       expect(body.error.code).toBe(VALIDATION_ERROR_CODE);
-      expect(body.error.message).toMatch(/passado/i);
+      expect(body.error.message).toMatch(/anterior à data da venda/i);
     });
   });
 
@@ -1079,6 +1381,592 @@ describe("sales (integração)", () => {
       const body = apiErrorSchema.parse(await second.json());
       expect(body.error.code).toBe(SALE_STATE_CONFLICT_CODE);
       expect(body.error.message).toMatch(/cancelada/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // RF-08 a RF-14 — exclusão de venda (Milestone 4)
+  // -------------------------------------------------------------------------
+  describe("exclusão de venda (RF-08 a RF-14)", () => {
+    it("caso 7: venda completed + entregue devolve exatamente as quantidades vendidas", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Batom Coral",
+        priceCents: 2_000,
+        stockQty: 10,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 3, unitPriceCents: 2_000 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      expect(sale.status).toBe("completed");
+      expect(await stockOf(app, productId, token)).toBe(7); // 10-3
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+
+      expect(await stockOf(app, productId, token)).toBe(10);
+      expect((await getSale(app, sale.id, token)).status).toBe(HTTP_NOT_FOUND);
+    });
+
+    it("caso 7b: venda open entregue pela rota POST /sales/:id/deliver devolve estoque ao excluir", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Base Matte",
+        priceCents: 4_000,
+        stockQty: 6,
+      });
+      // Nasce aberta (a receber na entrega); o débito acontece FORA do create.
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 2 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      expect(sale.status).toBe("open");
+      expect(await stockOf(app, productId, token)).toBe(6); // reserva, não baixa
+
+      expect((await deliverSale(app, sale.id, token)).status).toBe(HTTP_OK);
+      expect(await stockOf(app, productId, token)).toBe(4); // 6-2, debitado no deliver
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      expect(await stockOf(app, productId, token)).toBe(6);
+    });
+
+    it("caso 8: venda aberta não entregue não altera stockQty e zera a reserva ao excluir", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Corretivo",
+        priceCents: 3_500,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 2 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      const before = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(before.stockQty).toBe(5);
+      expect(before.reservedQty).toBe(2);
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+
+      const after = productSchema.parse(
+        await (await getProduct(app, productId, token)).json(),
+      );
+      expect(after.stockQty).toBe(5); // nunca foi debitado
+      expect(after.reservedQty).toBe(0); // a reserva era derivada da linha
+    });
+
+    it("caso 9: entregue → cancelada → excluída credita o estoque UMA vez só (pega o crédito em dobro)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Sombra",
+        priceCents: 2_800,
+        stockQty: 10,
+      });
+      // on_delivery + delivered: entregue e com estoque debitado, mas SEM
+      // cobrança paga — para que o cancelamento não seja bloqueado por
+      // CANCEL_WITH_PAID_MESSAGE (409) e o caso possa de fato chegar a
+      // "cancelada" antes de ser excluída.
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 4 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      expect(await stockOf(app, productId, token)).toBe(6); // 10-4
+
+      expect((await cancelSale(app, sale.id, token)).status).toBe(HTTP_OK);
+      expect(await stockOf(app, productId, token)).toBe(10); // cancel devolveu
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      // Se o predicado de estoque relaxasse "status <> canceled", isto viraria
+      // 14 (10+4, crédito em dobro) — é exatamente isto que o teste prova.
+      expect(await stockOf(app, productId, token)).toBe(10);
+    });
+
+    it("caso 19b: aberta não entregue → cancelada → excluída nunca credita estoque", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Lápis de Olho",
+        priceCents: 1_800,
+        stockQty: 8,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 2 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+      expect(await stockOf(app, productId, token)).toBe(8); // nunca debitou
+
+      expect((await cancelSale(app, sale.id, token)).status).toBe(HTTP_OK);
+      expect(await stockOf(app, productId, token)).toBe(8);
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      expect(await stockOf(app, productId, token)).toBe(8);
+    });
+
+    it("caso 10: exclusão com cobrança já paga responde 204 (não 409 como o cancelamento)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Blush",
+        priceCents: 2_200,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      // Venda à vista nasce com a cobrança já baixada — o caso de uso central.
+      expect(sale.receivables[0]?.status).toBe("paid");
+      // Confirma o contraste: cancelar isto é bloqueado (409)...
+      const cancelAttempt = await cancelSale(app, sale.id, token);
+      expect(cancelAttempt.status).toBe(HTTP_CONFLICT);
+
+      // ...mas excluir não é.
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+    });
+
+    it("caso 22: exclusão de venda parcialmente paga remove tudo e responde 204", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Kit Pincéis",
+        priceCents: 9_000,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "credit",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: FIRST_DUE_DATE,
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      const firstReceivable = sale.receivables[0];
+      if (!firstReceivable) {
+        throw new Error("recebível esperado ausente");
+      }
+      expect(
+        (await patchReceivable(app, firstReceivable.id, { paid: true }, token))
+          .status,
+      ).toBe(HTTP_OK);
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+
+      const remainingReceivables = await ctx.db
+        .select()
+        .from(receivables)
+        .where(eq(receivables.saleId, sale.id));
+      expect(remainingReceivables).toHaveLength(0);
+    });
+
+    it("caso 11: após excluir, itens e cobranças somem e o compromisso vinculado sobrevive com sale_id nulo", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Gloss",
+        priceCents: 1_500,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "credit",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: FIRST_DUE_DATE,
+        },
+        token,
+      );
+      expect(sale.receivables.length).toBeGreaterThan(0);
+      const appointmentId = await seedAppointmentLinkedToSale(
+        consultantId,
+        sale.id,
+      );
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+
+      const remainingItems = await ctx.db
+        .select()
+        .from(saleItems)
+        .where(eq(saleItems.saleId, sale.id));
+      expect(remainingItems).toHaveLength(0);
+
+      const remainingReceivables = await ctx.db
+        .select()
+        .from(receivables)
+        .where(eq(receivables.saleId, sale.id));
+      expect(remainingReceivables).toHaveLength(0);
+
+      const [appointmentRow] = await ctx.db
+        .select()
+        .from(appointments)
+        .where(eq(appointments.id, appointmentId));
+      expect(appointmentRow).toBeDefined();
+      expect(appointmentRow?.saleId).toBeNull();
+    });
+
+    it("caso 12: excluir venda de outra consultora responde 404 e a venda permanece intacta", async () => {
+      const app = buildApp();
+      const { token: tokenA } = await seedConsultantSession(app, CONSULTANT_A);
+      const { consultantId: idB, token: tokenB } = await seedConsultantSession(
+        app,
+        CONSULTANT_B,
+      );
+      const productId = await seedProduct(idB, {
+        name: "Produto da B",
+        priceCents: 3_000,
+        stockQty: 5,
+      });
+      const saleB = await createSaleOk(
+        app,
+        { items: [{ productId, qty: 1 }], paymentMethod: "cash" },
+        tokenB,
+      );
+
+      const deleteResponse = await deleteSale(app, saleB.id, tokenA);
+      expect(deleteResponse.status).toBe(HTTP_NOT_FOUND);
+      const body = apiErrorSchema.parse(await deleteResponse.json());
+      expect(body.error.code).toBe(SALE_NOT_FOUND_CODE);
+
+      const stillThere = await getSale(app, saleB.id, tokenB);
+      expect(stillThere.status).toBe(HTTP_OK);
+    });
+
+    it("caso 13: DELETE devolve 204 sem corpo, sem derrubar o request (lesson Elysia 1.4)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Protetor Solar",
+        priceCents: 5_500,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        { items: [{ productId, qty: 1 }], paymentMethod: "cash" },
+        token,
+      );
+
+      const response = await deleteSale(app, sale.id, token);
+      expect(response.status).toBe(HTTP_NO_CONTENT);
+      const text = await response.text();
+      expect(text).toBe("");
+    });
+
+    it("caso 18: excluir venda entregue cujo item tem product_id nulo não falha e não altera o produto restante", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const deletedProductId = await seedProduct(consultantId, {
+        name: "A Excluir",
+        priceCents: 2_000,
+        stockQty: 10,
+      });
+      const keptProductId = await seedProduct(consultantId, {
+        name: "Permanece",
+        priceCents: 3_000,
+        stockQty: 10,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [
+            { productId: deletedProductId, qty: 4 },
+            { productId: keptProductId, qty: 2 },
+          ],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      expect(await stockOf(app, keptProductId, token)).toBe(8); // 10-2
+
+      // Exclui um dos produtos vendidos (item vira product_id null via SET NULL).
+      expect((await deleteProduct(app, deletedProductId, token)).status).toBe(
+        HTTP_NO_CONTENT,
+      );
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+
+      // O produto ainda existente recebe o estoque de volta...
+      expect(await stockOf(app, keptProductId, token)).toBe(10);
+      // ...e o excluído continua inexistente (não recebeu estoque de volta).
+      expect((await getProduct(app, deletedProductId, token)).status).toBe(
+        HTTP_NOT_FOUND,
+      );
+    });
+
+    it("caso 20: venda com data de mais de um ano atrás é excluída sem erro (RF-13)", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Antigo",
+        priceCents: 1_000,
+        stockQty: 5,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          soldOn: OLD_SALE_DATE,
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "cash",
+          paymentCondition: "received",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+
+      const deleteResponse = await deleteSale(app, sale.id, token);
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+    });
+
+    it("caso 17: ponta-a-ponta — N-Q ao entregar M vendas retroativas; excluir todas devolve a N", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Histórico",
+        priceCents: 1_000,
+        stockQty: 100, // N
+      });
+      const quantities = [3, 5, 2]; // M=3 vendas, Q=10 unidades
+      const saleIds: string[] = [];
+      for (const qty of quantities) {
+        const sale = await createSaleOk(
+          app,
+          {
+            soldOn: RETROACTIVE_SALE_DATE,
+            items: [{ productId, qty }],
+            paymentMethod: "cash",
+            paymentCondition: "received",
+            deliveryStatus: "delivered",
+          },
+          token,
+        );
+        saleIds.push(sale.id);
+      }
+      expect(await stockOf(app, productId, token)).toBe(90); // 100-10
+
+      for (const saleId of saleIds) {
+        expect((await deleteSale(app, saleId, token)).status).toBe(
+          HTTP_NO_CONTENT,
+        );
+      }
+      expect(await stockOf(app, productId, token)).toBe(100);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // RF-09/RF-14 — concorrência envolvendo exclusão
+  // -------------------------------------------------------------------------
+  describe("concorrência envolvendo exclusão (RF-09/RF-14)", () => {
+    it("excluir × entregar concorrentes: história serial legal, sem baixa que sobra", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Disputa Entrega",
+        priceCents: 2_000,
+        stockQty: 20,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 3 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "pending",
+        },
+        token,
+      );
+
+      const [deleteResponse, deliverResponse] = await Promise.all([
+        deleteSale(app, sale.id, token),
+        deliverSale(app, sale.id, token),
+      ]);
+
+      // A exclusão nunca é bloqueada por uma entrega concorrente — ganhe ela
+      // ou perca a corrida do lock, o resultado final é sempre a remoção.
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      // Entregar, se perdeu a corrida, encontra a venda já excluída (404).
+      expect([HTTP_OK, HTTP_NOT_FOUND]).toContain(deliverResponse.status);
+      // Qualquer que seja a ordem, nenhuma baixa sobra: se entregar venceu e
+      // debitou, excluir devolveu; se excluir venceu primeiro, nunca debitou.
+      expect(await stockOf(app, productId, token)).toBe(20);
+    });
+
+    it("excluir × pagar parcela concorrentes: história serial legal, estoque devolvido exatamente uma vez", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Disputa Parcela",
+        priceCents: 5_000,
+        stockQty: 10,
+      });
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 1 }],
+          paymentMethod: "credit",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: FIRST_DUE_DATE,
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      const receivableId = sale.receivables[0]?.id;
+      if (!receivableId) {
+        throw new Error("recebível esperado ausente");
+      }
+      expect(await stockOf(app, productId, token)).toBe(9); // 10-1, entregue no create
+
+      const [deleteResponse, payResponse] = await Promise.all([
+        deleteSale(app, sale.id, token),
+        patchReceivable(app, receivableId, { paid: true }, token),
+      ]);
+
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      expect([HTTP_OK, HTTP_NOT_FOUND]).toContain(payResponse.status);
+      // A exclusão não é bloqueada por cobrança paga (RF-10): o estoque volta
+      // exatamente uma vez, tenha a baixa vencido a corrida ou não.
+      expect(await stockOf(app, productId, token)).toBe(10);
+      const remainingReceivables = await ctx.db
+        .select()
+        .from(receivables)
+        .where(eq(receivables.saleId, sale.id));
+      expect(remainingReceivables).toHaveLength(0);
+    });
+
+    it("excluir × cancelar concorrentes: crédito de estoque ÚNICO — o cenário direto do risco de dobrar", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+      const productId = await seedProduct(consultantId, {
+        name: "Disputa Cancelar",
+        priceCents: 4_000,
+        stockQty: 10,
+      });
+      // Entregue e não paga (on_delivery): cancelar não é bloqueado por
+      // parcela paga, então os dois lados da corrida podem de fato vencer.
+      const sale = await createSaleOk(
+        app,
+        {
+          items: [{ productId, qty: 3 }],
+          paymentMethod: "pix",
+          paymentCondition: "on_delivery",
+          deliveryStatus: "delivered",
+        },
+        token,
+      );
+      expect(await stockOf(app, productId, token)).toBe(7); // 10-3
+
+      const [deleteResponse, cancelResponse] = await Promise.all([
+        deleteSale(app, sale.id, token),
+        cancelSale(app, sale.id, token),
+      ]);
+
+      expect(deleteResponse.status).toBe(HTTP_NO_CONTENT);
+      expect([HTTP_OK, HTTP_NOT_FOUND]).toContain(cancelResponse.status);
+      // O ponto central: qualquer que seja a ordem, o estoque volta EXATAMENTE
+      // à quantidade original (10) — nunca em dobro (13, se cancel e delete
+      // devolvessem cada um por conta própria sem ver o estado um do outro).
+      expect(await stockOf(app, productId, token)).toBe(10);
     });
   });
 

@@ -18,11 +18,13 @@ import type {
 import {
   addMonthsClamped,
   appLocalDateIso,
+  appLocalDateTimeToUtc,
   splitInstallmentAmounts,
   validateSaleTotalCents,
 } from "@clientela/shared";
 import {
   InvalidSaleCreditError,
+  InvalidSaleDateError,
   InvalidSaleItemError,
   SaleNotFoundError,
 } from "./sales.errors";
@@ -33,6 +35,11 @@ const COMPLETED_SALE_STATUS: SaleStatus = "completed";
 const OPEN_SALE_STATUS: SaleStatus = "open";
 const CREDIT_FIRST_DUE_REQUIRED_MESSAGE =
   "Informe o primeiro vencimento para pagamento parcelado.";
+// Meio-dia local (nunca meia-noite): meia-noite local pode ser ambígua
+// (repetida) ou inexistente (pulada) numa virada de horário de verão —
+// `packages/shared/src/time.ts` alerta. Datas brasileiras anteriores a 2019
+// têm DST.
+const RETROACTIVE_SALE_TIME_HM = "12:00";
 
 // ---------------------------------------------------------------------------
 // Portas e tipos de dados entre service e repository. O service não conhece
@@ -202,6 +209,28 @@ const createReceivable = (
   updatedAt: transactionNow,
 });
 
+// Deriva o instante DE NEGÓCIO da venda (RF-03) a partir do dia local
+// escolhido (`soldOn`) e do instante canônico da transação — nunca lê o
+// relógio, recebe `transactionNow` já resolvido. `soldOn` ausente OU igual ao
+// dia local de hoje ⇒ `transactionNow` intacto, byte a byte (o caminho quente,
+// 99% das vendas, fica idêntico ao comportamento atual — plan.md). Passado ⇒
+// meio-dia local do dia escolhido. Futuro ⇒ `InvalidSaleDateError`: esta é a
+// guarda AUTORITATIVA (RF-02) — o Zod só dá feedback de UI e o CHECK do banco
+// não pode chamar `now()` (garante só `sold_at <= updated_at`).
+const deriveSaleInstant = (
+  soldOn: string | undefined,
+  transactionNow: Date,
+): Date => {
+  const todayLocal = appLocalDateIso(transactionNow.toISOString());
+  if (soldOn === undefined || soldOn === todayLocal) {
+    return transactionNow;
+  }
+  if (soldOn > todayLocal) {
+    throw new InvalidSaleDateError();
+  }
+  return new Date(appLocalDateTimeToUtc(soldOn, RETROACTIVE_SALE_TIME_HM));
+};
+
 // Recebe exclusivamente o input já validado, snapshots de produtos já travados
 // e o instante canônico do Postgres. Não toca em persistência nem no relógio:
 // a Task 2.2 fornece esses insumos e grava este resultado sem recalcular nada.
@@ -241,16 +270,22 @@ export const composeSaleCreation = (
     );
   }
 
-  const localTransactionDate = appLocalDateIso(transactionNow.toISOString());
+  // Instante DE NEGÓCIO da venda (RF-03): hoje ⇒ `transactionNow` intacto;
+  // passado ⇒ meio-dia local; futuro ⇒ InvalidSaleDateError. `createdAt`/
+  // `updatedAt` da venda e das cobranças continuam no relógio real — só o que
+  // é evento de negócio (soldAt/deliveredAt/completedAt, due_date/paid_at das
+  // cobranças) acompanha a data escolhida.
+  const saleInstant = deriveSaleInstant(input.soldOn, transactionNow);
+  const localSaleDate = appLocalDateIso(saleInstant.toISOString());
   const receivables: ComposedReceivableData[] = [];
   if (totalCents > 0) {
     if (input.paymentCondition === RECEIVED_PAYMENT_CONDITION) {
       receivables.push(
         createReceivable(
           totalCents,
-          localTransactionDate,
+          localSaleDate,
           "scheduled",
-          transactionNow,
+          saleInstant,
           transactionNow,
         ),
       );
@@ -259,7 +294,7 @@ export const composeSaleCreation = (
       receivables.push(
         createReceivable(
           totalCents,
-          delivered ? localTransactionDate : null,
+          delivered ? localSaleDate : null,
           delivered ? "scheduled" : "on_delivery",
           null,
           transactionNow,
@@ -296,9 +331,8 @@ export const composeSaleCreation = (
     initialPayment.paymentStatus,
   );
   const projection = derivePaymentProjection(totalCents, status, receivables);
-  const deliveredAt =
-    input.deliveryStatus === "delivered" ? transactionNow : null;
-  const completedAt = status === COMPLETED_SALE_STATUS ? transactionNow : null;
+  const deliveredAt = input.deliveryStatus === "delivered" ? saleInstant : null;
+  const completedAt = status === COMPLETED_SALE_STATUS ? saleInstant : null;
 
   return {
     sale: {
@@ -310,7 +344,7 @@ export const composeSaleCreation = (
       paymentPlanKnown: true,
       totalCents,
       status,
-      soldAt: transactionNow,
+      soldAt: saleInstant,
       deliveredAt,
       completedAt,
       canceledAt: null,
@@ -375,6 +409,7 @@ export type SalesRepositoryPort = {
   ) => Promise<{ rows: SaleListItem[]; total: number }>;
   getById: (consultantId: string, id: string) => Promise<Sale | undefined>;
   cancel: (consultantId: string, saleId: string) => Promise<Sale>;
+  remove: (consultantId: string, saleId: string) => Promise<void>;
   deliver?: (consultantId: string, saleId: string) => Promise<Sale>;
   listReceivables: (
     consultantId: string,
@@ -441,6 +476,12 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
   const cancel = (consultantId: string, saleId: string): Promise<Sale> =>
     repository.cancel(consultantId, saleId);
 
+  // Exclusão (RF-08 a RF-13): a decisão de estoque (três casos, um só devolve)
+  // é invariante TRANSACIONAL e vive no repository — o mesmo padrão do cancel.
+  // O service não adiciona regra nenhuma, só repassa o escopo.
+  const remove = (consultantId: string, saleId: string): Promise<void> =>
+    repository.remove(consultantId, saleId);
+
   const deliver = (consultantId: string, saleId: string): Promise<Sale> => {
     if (!repository.deliver) {
       throw new SaleNotFoundError();
@@ -485,6 +526,7 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
     list,
     getById,
     cancel,
+    remove,
     deliver,
     listReceivables,
     receivablesSummary,

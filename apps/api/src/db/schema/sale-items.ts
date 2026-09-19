@@ -16,7 +16,10 @@ export const saleItems = pgTable(
   {
     id: uuid("id").primaryKey().default(sql`uuidv7()`),
     // Item pertence a uma venda. onDelete cascade: os itens são agregados da
-    // venda e somem com ela (a FK é declarada; não há delete de venda em rota).
+    // venda e somem com ela. Caminho real desde o Milestone 4: `DELETE
+    // /sales/:id` (sales.repository.ts `remove`) reverte o estoque quando
+    // aplicável e então apaga a venda dentro da mesma transação — a cascata do
+    // banco cobre `sale_items` (e `receivables`), não o estoque.
     saleId: uuid("sale_id")
       .notNull()
       .references(() => sales.id, { onDelete: "cascade" }),

@@ -29,6 +29,7 @@ import {
   InsufficientStockError,
   InvalidSaleClientError,
   InvalidSaleCreditError,
+  InvalidSaleDateError,
   InvalidSaleItemError,
   ReceivableNotFoundError,
   SaleNotFoundError,
@@ -59,6 +60,7 @@ const ERROR_CODE = {
   invalidSaleItem: "INVALID_SALE_ITEM",
   invalidSaleCredit: "INVALID_SALE_CREDIT",
   invalidSaleClient: "INVALID_SALE_CLIENT",
+  invalidSaleDate: "INVALID_SALE_DATE",
   orderNotFound: "ORDER_NOT_FOUND",
   orderState: "ORDER_STATE",
   invalidOrderItem: "INVALID_ORDER_ITEM",
@@ -203,6 +205,13 @@ export const errorHandler = new Elysia({ name: "error-handler" }).onError(
     if (error instanceof InvalidSaleClientError) {
       set.status = HTTP_UNPROCESSABLE_ENTITY;
       return buildError(ERROR_CODE.invalidSaleClient, error.message);
+    }
+
+    // Data da venda no futuro (RF-02): guarda autoritativa do service,
+    // comparada com o relógio da transação — nunca o do cliente.
+    if (error instanceof InvalidSaleDateError) {
+      set.status = HTTP_UNPROCESSABLE_ENTITY;
+      return buildError(ERROR_CODE.invalidSaleDate, error.message);
     }
 
     // Erros de domínio do módulo orders (core.md/api.md): lançados no service

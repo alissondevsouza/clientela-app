@@ -189,6 +189,7 @@ export {
   type SaleStatus,
   type SalesListQuery,
   type SalesListQueryInput,
+  SOLD_ON_MIN_DATE,
   saleItemSchema,
   saleListItemSchema,
   saleSchema,

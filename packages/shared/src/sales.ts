@@ -223,7 +223,14 @@ const FIRST_DUE_DATE_INVALID_MESSAGE =
 const FIRST_DUE_DATE_REQUIRED_MESSAGE =
   "Informe o primeiro vencimento para pagamento parcelado";
 const FIRST_DUE_DATE_PAST_MESSAGE =
-  "O primeiro vencimento não pode ser no passado";
+  "O primeiro vencimento não pode ser anterior à data da venda";
+const SOLD_ON_INVALID_MESSAGE = "Informe a data da venda (data válida)";
+const SOLD_ON_FUTURE_MESSAGE = "A data da venda não pode ser no futuro";
+// Piso para barrar erro de digitação de ano (ex.: "2005") sem bloquear
+// histórico legítimo (RF-01). Consultora começou o negócio depois dessa data.
+export const SOLD_ON_MIN_DATE = "2015-01-01";
+const SOLD_ON_MIN_DATE_MESSAGE =
+  "A data da venda não pode ser anterior a 01/01/2015";
 const STATUS_INVALID_MESSAGE = "Status de venda inválido";
 const PAYMENT_METHOD_REQUIRED_MESSAGE = "Escolha a forma de pagamento";
 const DELIVERY_STATUS_REQUIRED_MESSAGE = "Informe a situação da entrega";
@@ -295,11 +302,32 @@ export const createSaleSchema = z
     firstDueDate: z.iso
       .date({ error: FIRST_DUE_DATE_INVALID_MESSAGE })
       .optional(),
+    // Dia local (`yyyy-mm-dd`) em que a venda aconteceu, distinto do `soldAt`
+    // (instante) da resposta. Ausente ⇒ o service assume hoje — mantém
+    // compatibilidade com todo chamador atual (plan.md).
+    soldOn: z.iso.date({ error: SOLD_ON_INVALID_MESSAGE }).optional(),
   })
   .superRefine((value, ctx) => {
     const isCard = value.paymentMethod === "card";
     const isCreditCard = value.cardType === "credit";
     const isInstallments = value.paymentCondition === "installments";
+    const todayIso = appLocalDateIso(new Date().toISOString());
+
+    if (value.soldOn !== undefined) {
+      if (value.soldOn > todayIso) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["soldOn"],
+          message: SOLD_ON_FUTURE_MESSAGE,
+        });
+      } else if (value.soldOn < SOLD_ON_MIN_DATE) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["soldOn"],
+          message: SOLD_ON_MIN_DATE_MESSAGE,
+        });
+      }
+    }
 
     if (isCard && value.cardType === undefined) {
       ctx.addIssue({
@@ -338,9 +366,7 @@ export const createSaleSchema = z
           path: ["firstDueDate"],
           message: FIRST_DUE_DATE_REQUIRED_MESSAGE,
         });
-      } else if (
-        value.firstDueDate < appLocalDateIso(new Date().toISOString())
-      ) {
+      } else if (value.firstDueDate < (value.soldOn ?? todayIso)) {
         ctx.addIssue({
           code: "custom",
           path: ["firstDueDate"],

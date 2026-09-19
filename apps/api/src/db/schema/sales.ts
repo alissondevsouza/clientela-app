@@ -159,9 +159,13 @@ export const sales = pgTable(
           AND ${table.installments} BETWEEN 1 AND 24)
       )`,
     ),
+    // Não restringe created_at <= sold_at: venda retroativa é criada hoje com
+    // sold_at no passado (RF-02/plan.md). O guard de coerência que sobra é
+    // sold_at <= updated_at — o banco não pode barrar data futura (CHECK não
+    // chama now()); isso é responsabilidade do service (relógio do Postgres).
     check(
       "sales_temporal_matrix_check",
-      sql`${table.createdAt} <= ${table.soldAt}
+      sql`${table.createdAt} <= ${table.updatedAt}
         AND ${table.soldAt} <= ${table.updatedAt}
         AND (${table.deliveredAt} IS NULL OR (${table.soldAt} <= ${table.deliveredAt} AND ${table.deliveredAt} <= ${table.updatedAt}))
         AND (${table.completedAt} IS NULL OR (${table.deliveredAt} IS NOT NULL AND ${table.deliveredAt} <= ${table.completedAt} AND ${table.completedAt} <= ${table.updatedAt}))

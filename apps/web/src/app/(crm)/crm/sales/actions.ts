@@ -12,6 +12,7 @@ import { listProducts } from "@/lib/products-api";
 import {
   cancelSale,
   createSale,
+  deleteSale,
   deliverSale,
   setReceivablePaid,
 } from "@/lib/sales-api";
@@ -19,6 +20,10 @@ import {
 const LIST_PATH = "/crm/sales";
 const PRODUCTS_PATH = "/crm/products";
 const RECEIVABLES_PATH = "/crm/sales/receivables";
+// Home "Início" do CRM (`(crm)/crm/page.tsx`): agrega vendas/lucro do mês e a
+// receber. Excluir venda entregue devolve estoque e remove cobranças —
+// nenhuma outra action de vendas revalidava este path até agora.
+const DASHBOARD_PATH = "/crm";
 const LOGIN_PATH = "/login";
 
 // Limite de resultados da busca no form de venda: dados mínimos para escolher
@@ -144,6 +149,43 @@ export const deliverSaleAction = async (
   revalidatePath(RECEIVABLES_PATH);
   revalidatePath(saleDetailPath(parsed.data));
   return { ok: true };
+};
+
+// Exclui a venda (DELETE /sales/:id — RF-08/RF-09). Ao contrário de cancelar,
+// o DETALHE DEIXA DE EXISTIR: sucesso revalida a lista de vendas, a de produtos
+// (venda entregue devolve estoque), "Quem me deve" (as cobranças somem), o
+// dashboard (RF-15: os agregados de faturamento/a receber mudam) e o próprio
+// detalhe (para qualquer requisição em voo não servir a página apagada do
+// cache) — e REDIRECIONA para a lista, nunca permanecendo no detalhe.
+// `revalidatePath`/`redirect` ficam FORA de try/catch: o helper nunca lança
+// (resultado discriminado) e `redirect` lança NEXT_REDIRECT propositalmente.
+// Falha (404 cross-tenant, rede) ⇒ `{ ok: false, message }` pt-BR.
+export const deleteSaleAction = async (
+  id: string,
+): Promise<SalesActionResult> => {
+  const parsed = saleIdSchema.safeParse(id);
+  if (!parsed.success) {
+    return { ok: false, message: INVALID_INPUT_MESSAGE };
+  }
+
+  const token = await requireToken();
+
+  const result = await deleteSale(parsed.data, {
+    fetchImpl: fetch,
+    apiUrl: loadWebEnv().API_URL,
+    token,
+  });
+
+  if (!result.ok) {
+    return { ok: false, message: result.message };
+  }
+
+  revalidatePath(LIST_PATH);
+  revalidatePath(PRODUCTS_PATH);
+  revalidatePath(RECEIVABLES_PATH);
+  revalidatePath(saleDetailPath(parsed.data));
+  revalidatePath(DASHBOARD_PATH);
+  redirect(LIST_PATH);
 };
 
 // Dados mínimos de cliente para a busca do form de venda (LGPD/RF-12: só o

@@ -2,6 +2,8 @@
 // centavos inteiros (core.md/web.md); a divisão por 100 acontece só aqui, na
 // formatação. O Intl.NumberFormat é instanciado uma vez no módulo (imutável).
 
+import { appLocalDateIso } from "@clientela/shared";
+
 const CENTS_PER_UNIT = 100;
 
 const brlFormatter = new Intl.NumberFormat("pt-BR", {
@@ -36,6 +38,17 @@ export function formatDateBr(isoDate: string): string {
   }
   const [, year, month, day] = match;
   return `${day}/${month}/${year}`;
+}
+
+// Formata um INSTANTE (ISO datetime, ex.: `soldAt`/`deliveredAt`) no dia
+// LOCAL (`APP_TIME_ZONE`), não no dia UTC (RF-07). Substitui o padrão
+// `formatDateBr(isoDateTime.split("T")[0])` que apareceu duplicado em quatro
+// pontos de exibição de vendas: fatiar o ISO antes do "T" lê o dia em UTC, e
+// um instante de fim de dia no fuso da aplicação (ex.: 21:00 BRT) vira meia-
+// noite UTC do dia SEGUINTE — a venda de hoje à noite aparecia como sendo de
+// amanhã.
+export function formatLocalDateBr(isoInstant: string): string {
+  return formatDateBr(appLocalDateIso(isoInstant));
 }
 
 // Converte um valor em reais digitado no padrão pt-BR (ex.: "R$ 1.234,56") para
