@@ -11,6 +11,7 @@ import { ReceivableNotFoundError, SaleNotFoundError } from "./sales.errors";
 import type { SalesService } from "./sales.service";
 
 const HTTP_CREATED = 201;
+const HTTP_NO_CONTENT = 204;
 
 const AUTHORIZATION_HEADER = "authorization";
 
@@ -85,6 +86,17 @@ export const createSalesRoutes = ({
           request.headers.get(AUTHORIZATION_HEADER),
         );
         return service.getById(consultantId, requireValidSaleId(params.id));
+      })
+      // RF-08 a RF-13: exclusão definitiva (reversão de estoque + DELETE numa
+      // única transação, sales.repository.ts). 204 explícito via `new
+      // Response` — `set.status = 204` com retorno `undefined` derruba o
+      // request com TypeError na serialização (lesson 2026-07-18, Elysia 1.4).
+      .delete("/sales/:id", async ({ request, params }) => {
+        const consultantId = await resolveConsultantId(
+          request.headers.get(AUTHORIZATION_HEADER),
+        );
+        await service.remove(consultantId, requireValidSaleId(params.id));
+        return new Response(null, { status: HTTP_NO_CONTENT });
       })
       .post("/sales/:id/cancel", async ({ request, params }) => {
         const consultantId = await resolveConsultantId(

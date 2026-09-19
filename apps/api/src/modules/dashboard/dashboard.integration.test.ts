@@ -5,6 +5,7 @@ import {
   loginResponseSchema,
   productSchema,
   receivablesSummarySchema,
+  saleSchema,
 } from "@clientela/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -82,6 +83,14 @@ const OVERDUE_DATE_LATE = "2020-06-01";
 // Fora do mês corrente sob qualquer data real de execução do teste: retrodata
 // mais de 2 anos, bem além de qualquer borda de mês/fuso (RF-04).
 const PAST_MONTH_SOLD_AT = new Date("2020-03-15T12:00:00.000Z");
+
+// RF-15 (caso 16 do plan.md): venda a prazo do "mês anterior" relativa ao ano
+// corrente (evita fixar um literal que "expira" com o tempo — mesmo padrão de
+// `RETROACTIVE_SALE_DATE` em sales.integration.test.ts). Dia 15: meio-dia
+// local nunca cruza para outro mês por causa do fuso (RF-03).
+const RF15_SALE_YEAR = new Date().getFullYear() - 1;
+const RF15_SOLD_ON = `${RF15_SALE_YEAR}-03-15`;
+const RF15_FIRST_DUE_DATE = `${RF15_SALE_YEAR}-04-01`;
 
 // Hasher real de KDF do Node (scrypt): os workers do Vitest rodam sob Node,
 // onde o global `Bun` (argon2id) não existe. Espelha sales/products/clients.
@@ -394,6 +403,28 @@ describe("dashboard (integração)", () => {
       }),
     );
 
+  const getSale = (app: App, id: string, token: string): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/sales/${id}`, {
+        method: "GET",
+        headers: bearer(token),
+      }),
+    );
+
+  const patchReceivable = (
+    app: App,
+    id: string,
+    body: unknown,
+    token: string,
+  ): Promise<Response> =>
+    app.handle(
+      new Request(`http://localhost/receivables/${id}`, {
+        method: "PATCH",
+        headers: jsonHeaders(token),
+        body: JSON.stringify(body),
+      }),
+    );
+
   const getReceivablesSummary = (app: App, token: string): Promise<Response> =>
     app.handle(
       new Request("http://localhost/receivables/summary", {
@@ -675,6 +706,99 @@ describe("dashboard (integração)", () => {
       expect(summary.overdueReceivablesCount).toBe(
         receivablesTotals.overdueCount,
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // RF-15 (caso 16 do plan.md) — o recorte do mês é por `sold_at`, não por
+  // `completed_at`. Sem isso, uma venda a prazo retroativa do mês anterior,
+  // quitada hoje, entraria no faturamento/lucro do mês da digitação (o
+  // instante em que a última parcela é baixada — sales.repository.ts
+  // `setReceivablePaid`), em vez do mês em que a venda de fato aconteceu.
+  // -------------------------------------------------------------------------
+  describe("GET /dashboard/summary — recorte do mês por sold_at (RF-15)", () => {
+    it("venda a prazo retroativa do mês anterior, quitada hoje, não conta no mês corrente mesmo com completed_at de hoje", async () => {
+      const app = buildApp();
+      const { consultantId, token } = await seedConsultantSession(
+        app,
+        CONSULTANT_A,
+      );
+
+      // Baseline do mês corrente: prova que a venda retroativa (quando
+      // quitada) não se soma a ela.
+      const currentMonthSale = await seedSale(consultantId, {
+        totalCents: 5_000,
+      });
+      await seedSaleItem(currentMonthSale, {
+        productName: "Baseline do mês corrente",
+        qty: 1,
+        unitPriceCents: 5_000,
+        costCents: 2_000,
+      });
+
+      const baseline = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+      expect(baseline.monthSalesCents).toBe(5_000);
+      expect(baseline.monthSalesCount).toBe(1);
+      expect(baseline.monthProfitCents).toBe(3_000);
+
+      const productId = await seedProduct(consultantId, {
+        name: "Produto Retroativo RF-15",
+        costCents: 4_000,
+        priceCents: 10_000,
+        stockQty: 10,
+      });
+
+      // Venda a prazo (2 parcelas) datada do mês anterior, ainda `open`.
+      const saleResponse = await postSale(
+        app,
+        {
+          soldOn: RF15_SOLD_ON,
+          items: [{ productId, qty: 1, unitPriceCents: 10_000 }],
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          firstDueDate: RF15_FIRST_DUE_DATE,
+        },
+        token,
+      );
+      expect(saleResponse.status).toBe(HTTP_CREATED);
+      const retroactiveSale = saleSchema.parse(await saleResponse.json());
+      expect(retroactiveSale.status).toBe("open");
+      expect(retroactiveSale.receivables).toHaveLength(2);
+
+      // Quita as duas parcelas HOJE: `completed_at` nasce no instante da
+      // baixa, não no dia da venda (sales.repository.ts:811-813).
+      for (const receivable of retroactiveSale.receivables) {
+        const paidResponse = await patchReceivable(
+          app,
+          receivable.id,
+          { paid: true },
+          token,
+        );
+        expect(paidResponse.status).toBe(HTTP_OK);
+      }
+
+      const completedResponse = await getSale(app, retroactiveSale.id, token);
+      expect(completedResponse.status).toBe(HTTP_OK);
+      const completedSale = saleSchema.parse(await completedResponse.json());
+
+      // A venda quitou hoje, mas `soldAt` continua no mês anterior — o
+      // descasamento que o RF-15 corrige.
+      expect(completedSale.status).toBe("completed");
+      expect(completedSale.soldAt.slice(0, 7)).toBe(RF15_SOLD_ON.slice(0, 7));
+      expect(completedSale.completedAt).not.toBeNull();
+
+      const after = dashboardSummarySchema.parse(
+        await (await getSummary(app, token)).json(),
+      );
+
+      // Recortando por `sold_at`, a venda retroativa não altera o mês
+      // corrente mesmo tendo sido concluída (completed_at) agora.
+      expect(after.monthSalesCents).toBe(baseline.monthSalesCents);
+      expect(after.monthSalesCount).toBe(baseline.monthSalesCount);
+      expect(after.monthProfitCents).toBe(baseline.monthProfitCents);
     });
   });
 

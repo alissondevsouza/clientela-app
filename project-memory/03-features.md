@@ -24,8 +24,8 @@ O mínimo que substitui o caderno/planilha.
 - [ ] **Clientes** — cadastro e listagem: nome, WhatsApp, aniversário, tom de pele, produtos que usa, observações, histórico de compras. Botão de abrir conversa no WhatsApp.
 - [ ] **Leads** — lista dos cadastros vindos da landing, com status (novo → contatado → virou cliente / descartado).
 - [ ] **Produtos & estoque** — catálogo dela: preço de custo, preço de venda, quantidade em mãos. Alerta de estoque baixo. Visão de capital parado em produto.
-- [ ] **Vendas** — registrar venda: cliente, itens, valor, forma de pagamento. Suporte a **fiado/parcelado** com controle de "quem me deve" e baixa de pagamento. Venda dá baixa no estoque.
-- [ ] **Dashboard** — vendas do mês, lucro estimado (venda − custo), a receber, meta mensal.
+- [ ] **Vendas** — registrar venda: cliente, itens, valor, forma de pagamento e **data da venda** (pré-preenchida com hoje, alterável para qualquer data passada — permite reinserir histórico e lançar em lote; ADR-0025). Suporte a **fiado/parcelado** com controle de "quem me deve" e baixa de pagamento. Venda dá baixa no estoque. **Cancelar** (a venda existiu e não se concretizou) e **excluir** (a venda nunca existiu — duplicata, erro de digitação) são ações distintas e coexistem; excluir reverte o estoque conforme o estado da venda (ADR-0024).
+- [ ] **Dashboard** — vendas do mês, lucro estimado (venda − custo), a receber, meta mensal. O mês é recortado pela **data da venda** (ADR-0025). Leitura de períodos anteriores ao mês corrente é o item CRM-14 do roadmap.
 
 ## Fase 3 — Relacionamento (a funcionalidade matadora)
 

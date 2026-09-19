@@ -3,6 +3,7 @@ import {
   centsToReaisInput,
   formatBRL,
   formatDateBr,
+  formatLocalDateBr,
   parseBRLToCents,
 } from "./format";
 
@@ -43,6 +44,22 @@ describe("formatDateBr", () => {
 
   it("retorna a própria string para datetime ISO completo", () => {
     expect(formatDateBr("1990-05-10T00:00:00Z")).toBe("1990-05-10T00:00:00Z");
+  });
+});
+
+describe("formatLocalDateBr", () => {
+  // Regressão RF-07: o padrão antigo (`formatDateBr(isoDateTime.split("T")[0])`)
+  // lê o dia em UTC. 21:00 locais (America/Sao_Paulo, UTC-3) é 00:00 UTC do dia
+  // SEGUINTE — o slice antigo devolveria "16/03/2026" aqui. Este teste falha
+  // contra esse comportamento antigo e só passa convertendo para o dia local.
+  it("mostra o dia local (não o dia UTC) para um instante equivalente a 21h locais", () => {
+    const instantAt21hLocal = "2026-03-16T00:00:00.000Z";
+    expect(formatLocalDateBr(instantAt21hLocal)).toBe("15/03/2026");
+  });
+
+  it("mostra o dia local para um instante ao meio-dia local", () => {
+    const instantAtNoonLocal = "2026-03-15T15:00:00.000Z";
+    expect(formatLocalDateBr(instantAtNoonLocal)).toBe("15/03/2026");
   });
 });
 

@@ -127,6 +127,9 @@ const noopSalesRepository: SalesRepositoryPort = {
   cancel: async () => {
     throw new Error("sales não é exercitado neste teste");
   },
+  remove: async () => {
+    throw new Error("sales não é exercitado neste teste");
+  },
   listReceivables: async () => ({ rows: [], total: 0 }),
   receivablesSummary: async () => ({
     pendingCents: 0,

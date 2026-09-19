@@ -13,12 +13,13 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { CancelSaleButton } from "@/components/sales/cancel-sale-button";
+import { DeleteSaleButton } from "@/components/sales/delete-sale-button";
 import { DeliverSaleButton } from "@/components/sales/deliver-sale-button";
 import { SaleReceivableRow } from "@/components/sales/sale-receivable-row";
 import { SaleStatusBadge } from "@/components/sales/sale-status-badge";
 import { SESSION_COOKIE_NAME } from "@/lib/auth";
 import { loadWebEnv } from "@/lib/env";
-import { formatBRL, formatDateBr } from "@/lib/format";
+import { formatBRL, formatLocalDateBr } from "@/lib/format";
 import { getSale } from "@/lib/sales-api";
 
 const PAGE_TITLE = "Venda";
@@ -48,7 +49,6 @@ const UNKNOWN_PLAN_NOTICE =
 
 const PLAN_SEPARATOR = " · ";
 
-const ISO_DATE_TIME_SEPARATOR = "T";
 const SALE_CANCELED = "canceled";
 
 // Plano de pagamento em uma linha: forma, tipo de cartão quando houver e
@@ -72,12 +72,6 @@ const describePaymentPlan = (sale: Sale): string => {
 
 const clientDetailHref = (clientId: string): string =>
   `/crm/clients/${clientId}`;
-
-// `soldAt` chega como ISO datetime; a UI mostra só a data (dd/mm/aaaa).
-// `formatDateBr` espera `yyyy-mm-dd`, então extraímos a parte antes do `T`
-// (fail-safe: valor cru se o formato fugir do esperado).
-const toDatePart = (isoDateTime: string): string =>
-  isoDateTime.split(ISO_DATE_TIME_SEPARATOR)[0] ?? isoDateTime;
 
 const itemSubtotalCents = (item: SaleItem): number =>
   item.qty * item.unitPriceCents;
@@ -170,7 +164,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{SOLD_AT_LABEL}</dt>
-          <dd>{formatDateBr(toDatePart(sale.soldAt))}</dd>
+          <dd>{formatLocalDateBr(sale.soldAt)}</dd>
         </div>
         <div className="flex flex-col gap-0.5">
           <dt className="text-muted-foreground">{PAYMENT_LABEL}</dt>
@@ -190,8 +184,7 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
             {DELIVERY_STATUS_LABELS[sale.deliveryStatus]}
             {sale.deliveredAt !== null ? (
               <span className="block text-xs text-muted-foreground">
-                {DELIVERED_AT_PREFIX}{" "}
-                {formatDateBr(toDatePart(sale.deliveredAt))}
+                {DELIVERED_AT_PREFIX} {formatLocalDateBr(sale.deliveredAt)}
               </span>
             ) : null}
           </dd>
@@ -274,6 +267,16 @@ export default async function SaleDetailPage({ params }: SaleDetailPageProps) {
           delivered={sale.deliveryStatus === "delivered"}
         />
       ) : null}
+      {/* Excluir fica disponível para QUALQUER venda, inclusive cancelada
+          (RF-13 — sem trava de prazo). É um verbo distinto de cancelar
+          (RF-14): cancelar = a venda existiu e não se concretizou; excluir =
+          a venda nunca existiu. */}
+      <DeleteSaleButton
+        saleId={sale.id}
+        delivered={sale.deliveryStatus === "delivered"}
+        canceled={isCanceled}
+        paidCents={sale.paidCents}
+      />
     </div>
   );
 }

@@ -220,7 +220,116 @@ describe("createSaleSchema — matriz de pagamento", () => {
         }),
         "firstDueDate",
       ),
-    ).toBe("O primeiro vencimento não pode ser no passado");
+    ).toBe("O primeiro vencimento não pode ser anterior à data da venda");
+    vi.useRealTimers();
+  });
+});
+
+describe("createSaleSchema — soldOn (data da venda)", () => {
+  it("aceita ausência de soldOn (compatibilidade com chamadores atuais)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(VALID_INSTANT));
+    expect(createSaleSchema.safeParse(createInput()).success).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("aceita soldOn de data passada", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(
+      createSaleSchema.safeParse(createInput({ soldOn: "2026-01-15" })).success,
+    ).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("rejeita soldOn no futuro com a mensagem exata", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(issueFor(createInput({ soldOn: "2026-09-11" }), "soldOn")).toBe(
+      "A data da venda não pode ser no futuro",
+    );
+    vi.useRealTimers();
+  });
+
+  it("rejeita soldOn anterior ao piso 01/01/2015 com a mensagem exata, e aceita o próprio piso", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(issueFor(createInput({ soldOn: "2014-12-31" }), "soldOn")).toBe(
+      "A data da venda não pode ser anterior a 01/01/2015",
+    );
+    expect(
+      createSaleSchema.safeParse(createInput({ soldOn: "2015-01-01" })).success,
+    ).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("rejeita soldOn com formato inválido", () => {
+    expect(
+      createSaleSchema.safeParse(createInput({ soldOn: "15/01/2026" })).success,
+    ).toBe(false);
+  });
+
+  it("aceita venda retroativa com firstDueDate entre a data da venda e hoje", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(
+      createSaleSchema.safeParse(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          soldOn: "2026-08-01",
+          firstDueDate: "2026-08-15",
+        }),
+      ).success,
+    ).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("rejeita firstDueDate anterior à data da venda", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          soldOn: "2026-08-01",
+          firstDueDate: "2026-07-31",
+        }),
+        "firstDueDate",
+      ),
+    ).toBe("O primeiro vencimento não pode ser anterior à data da venda");
+    vi.useRealTimers();
+  });
+
+  it("venda de hoje mantém o comportamento atual de firstDueDate", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T12:00:00.000Z"));
+    expect(
+      createSaleSchema.safeParse(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          soldOn: "2026-09-10",
+          firstDueDate: "2026-09-10",
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      issueFor(
+        createInput({
+          paymentMethod: "pix",
+          paymentCondition: "installments",
+          installments: 2,
+          soldOn: "2026-09-10",
+          firstDueDate: "2026-09-09",
+        }),
+        "firstDueDate",
+      ),
+    ).toBe("O primeiro vencimento não pode ser anterior à data da venda");
     vi.useRealTimers();
   });
 });

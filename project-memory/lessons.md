@@ -82,3 +82,15 @@ Parecia bastar o clássico `volume:/var/lib/postgresql/data`, e `docker compose 
 ## 2026-07-16 — `sql.join` vira placeholders no drizzle-kit generate
 
 Ao derivar a constraint CHECK de um array de literais com `sql.join(values.map(v => sql\`${v}\`))`, o `drizzle-kit generate` emite `IN ($1, $2, ...)` no SQL — gerando migração espúria que difere da anterior. Para SQL de DDL determinístico, usar `sql.raw` com os literais escapados (mantendo a fonte única no array TS).
+
+## 2026-09-19 — Um CHECK do Postgres não pode barrar data futura
+
+Constraint não chama `now()`: qualquer invariante que dependa do "agora" precisa viver no service. No CRM-13 a spec chegou a prometer "data futura rejeitada como invariante no banco" — falso, porque uma linha com `sold_at` e `updated_at` **ambos** no futuro satisfaz `sold_at <= updated_at`. O que o CHECK entrega é coerência entre colunas, não relação com o presente. Detectar: qualquer requisito de "não pode ser no futuro/passado" atribuído ao banco.
+
+## 2026-09-19 — Sem jsdom no projeto, critério de aceite de UI precisa virar helper puro
+
+`vitest.config.ts` roda em `environment: "node"` e coleta só `apps/**/*.test.ts` — não há jsdom, `@testing-library` nem um único `.test.tsx`. Prescrever "teste do formulário" é prometer cobertura inexistente (proibido por `spec-format.md`). O padrão que funciona, já estabelecido em `sale-lifecycle.ts`/`sale-total.ts`/`appointment-form-payload.ts`: extrair a **decisão** para módulo `.ts` puro em `apps/web/src/lib/` e testar lá; o que sobra de render e clique vira pendência declarada de E2E. Efeito colateral bom: a lógica sai do componente. Detectar: critério de aceite de UI sem arquivo `.test.ts` possível.
+
+## 2026-09-19 — Reverter o fix é a única prova de que o teste de regressão não é vácuo
+
+Na implementação do RF-15 o agente reverteu temporariamente `monthSalesScope` para `completed_at`, rodou o arquivo e confirmou que **só** o caso novo falhava — depois restaurou. Sem esse passo, um teste de regressão pode estar passando por motivo errado (setup que nunca alcança o estado pretendido). Aconteceu de fato no mesmo ciclo: o caso "entregue → cancelada → excluída" usava venda à vista, cujo `cancel` responde 409 por cobrança paga — o teste nunca chegava ao estado que pretendia sondar.

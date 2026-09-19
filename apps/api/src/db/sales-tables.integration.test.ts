@@ -279,6 +279,34 @@ describe("tabelas de vendas (integração)", () => {
     ).rejects.toThrow();
   });
 
+  it("aceita venda retroativa (created_at posterior a sold_at)", async () => {
+    // RF-02/RF-04: venda retroativa é criada hoje com sold_at no passado —
+    // created_at > sold_at deixou de ser uma incoerência (0014_brief_lifeguard).
+    // O guard de coerência que resta é sold_at <= updated_at, coberto pelo
+    // caso "sold_at > updated_at" abaixo.
+    const consultant = await insertConsultant(
+      ctx,
+      "sale-retroactive@example.com",
+    );
+    const base = "2026-09-10T12:00:00.000Z";
+    const later = "2026-09-10T13:00:00.000Z";
+
+    const rows = await ctx.sql<{ id: string }[]>`
+      INSERT INTO sales (
+        consultant_id, client_name, total_cents, payment_method,
+        payment_condition, installments, status, sold_at, created_at,
+        updated_at
+      ) VALUES (
+        ${consultant.id}, 'Cliente', 1000, 'cash', 'received', 1,
+        'open', ${base}::timestamptz, ${later}::timestamptz,
+        ${later}::timestamptz
+      )
+      RETURNING id
+    `;
+
+    expect(rows).toHaveLength(1);
+  });
+
   it("rejeita cada relação inválida da matriz temporal de vendas", async () => {
     const consultant = await insertConsultant(
       ctx,
@@ -288,15 +316,11 @@ describe("tabelas de vendas (integração)", () => {
     const later = "2026-09-10T13:00:00.000Z";
     const latest = "2026-09-10T14:00:00.000Z";
     const cases = [
-      {
-        status: "open",
-        createdAt: later,
-        soldAt: base,
-        updatedAt: later,
-        deliveredAt: null,
-        completedAt: null,
-        canceledAt: null,
-      },
+      // Guard de coerência que resta no banco após 0014_brief_lifeguard
+      // (RF-02): sold_at > updated_at continua rejeitado — é a única barreira
+      // temporal contra data futura que o CHECK consegue expressar (não pode
+      // chamar now()); a guarda autoritativa de "não pode ser no futuro" vive
+      // no service, com o relógio da transação.
       {
         status: "open",
         createdAt: base,
@@ -620,6 +644,33 @@ describe("tabelas de vendas (integração)", () => {
     ).rejects.toThrow();
   });
 
+  it("aceita cobrança retroativa (created_at posterior a paid_at)", async () => {
+    // RF-05: cobrança sintética de venda retroativa nasce hoje com paid_at na
+    // data da venda, no passado — created_at > paid_at deixou de ser uma
+    // incoerência (0014_brief_lifeguard). O guard que resta é
+    // paid_at <= updated_at, coberto pelo caso "paid_at > updated_at" abaixo.
+    const consultant = await insertConsultant(
+      ctx,
+      "recv-retroactive@example.com",
+    );
+    const sale = await insertSale(ctx, consultant.id);
+    const base = "2026-09-10T12:00:00.000Z";
+    const later = "2026-09-10T13:00:00.000Z";
+
+    const rows = await ctx.sql<{ id: string }[]>`
+      INSERT INTO receivables (
+        sale_id, amount_cents, due_date, due_kind, paid_at, created_at,
+        updated_at
+      ) VALUES (
+        ${sale.id}, 1000, '2026-09-10', 'scheduled',
+        ${base}::timestamptz, ${later}::timestamptz, ${later}::timestamptz
+      )
+      RETURNING id
+    `;
+
+    expect(rows).toHaveLength(1);
+  });
+
   it("rejeita cada relação inválida da matriz temporal de recebíveis", async () => {
     const consultant = await insertConsultant(
       ctx,
@@ -630,7 +681,9 @@ describe("tabelas de vendas (integração)", () => {
     const later = "2026-09-10T13:00:00.000Z";
     const cases = [
       { createdAt: later, updatedAt: base, paidAt: null, voidedAt: null },
-      { createdAt: later, updatedAt: later, paidAt: base, voidedAt: null },
+      // Guard de coerência que resta após 0014_brief_lifeguard (RF-05):
+      // paid_at > updated_at continua rejeitado.
+      { createdAt: base, updatedAt: base, paidAt: later, voidedAt: null },
       { createdAt: base, updatedAt: base, paidAt: null, voidedAt: later },
     ] as const;
 

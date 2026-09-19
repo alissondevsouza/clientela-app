@@ -19,6 +19,7 @@ import type { FetchImpl } from "./submit-lead";
 
 const HTTP_OK = 200;
 const HTTP_CREATED = 201;
+const HTTP_NO_CONTENT = 204;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 
@@ -90,6 +91,10 @@ export type CancelSaleResult =
 export type DeliverSaleResult =
   | { ok: true }
   | { ok: false; notFound: boolean; conflict: boolean; message: string };
+
+export type DeleteSaleResult =
+  | { ok: true }
+  | { ok: false; notFound: boolean; message: string };
 
 export type ListReceivablesResult =
   | {
@@ -395,6 +400,40 @@ export const deliverSale = async (
       message: await extractErrorMessage(response),
     };
   }
+  return { ok: true };
+};
+
+// Exclui a venda (DELETE /sales/:id — RF-08/RF-09). 204 SEM CORPO → sucesso:
+// nunca chama `.json()` nessa resposta (lesson 2026-07-18 — o Elysia responde
+// `new Response(null, { status: 204 })`, sem envelope algum para parsear). 404
+// → notFound (inclui cross-tenant, RF-12, sem vazar existência); demais →
+// mensagem da API quando presente. Nunca lança.
+export const deleteSale = async (
+  id: string,
+  { fetchImpl, apiUrl, token }: SalesApiDeps,
+): Promise<DeleteSaleResult> => {
+  let response: Response;
+  try {
+    response = await fetchImpl(joinUrl(apiUrl, salePath(id, "")), {
+      method: "DELETE",
+      headers: authHeaders(token),
+    });
+  } catch {
+    return { ok: false, notFound: false, message: GENERIC_ERROR_MESSAGE };
+  }
+
+  if (response.status === HTTP_NOT_FOUND) {
+    return { ok: false, notFound: true, message: SALE_NOT_FOUND_MESSAGE };
+  }
+
+  if (response.status !== HTTP_NO_CONTENT) {
+    return {
+      ok: false,
+      notFound: false,
+      message: await extractErrorMessage(response),
+    };
+  }
+
   return { ok: true };
 };
 

@@ -1,9 +1,9 @@
 "use client";
 
 import {
+  appLocalDateIso,
   CARD_TYPE_LABELS,
   type CreatePaymentMethod,
-  type CreateSaleInput,
   createPaymentMethodValues,
   createSaleSchema,
   DELIVERY_STATUS_LABELS,
@@ -11,8 +11,10 @@ import {
   PAYMENT_CONDITION_LABELS,
   PAYMENT_METHOD_LABELS,
   type PaymentCondition,
+  SOLD_ON_MIN_DATE,
 } from "@clientela/shared";
 import { X } from "lucide-react";
+import type { ChangeEvent } from "react";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   type Control,
@@ -37,7 +39,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { centsToReaisInput, formatBRL, parseBRLToCents } from "@/lib/format";
+import { centsToReaisInput, formatBRL } from "@/lib/format";
+import { saleFormDateDefaults } from "@/lib/sale-form-defaults";
+import {
+  buildSaleFormPayload,
+  parseSaleFormPrice,
+} from "@/lib/sale-form-payload";
 import {
   installmentAmountPreviewCents,
   lineSubtotalCents,
@@ -70,6 +77,8 @@ const STOCK_AVAILABLE_LABEL = "Estoque disponível";
 const REMOVE_ITEM_LABEL = "Remover item";
 const ADD_ITEM_LABEL = "Adicionar item";
 const NO_VALUE_TEXT = "—";
+
+const SOLD_ON_LABEL = "Data da venda";
 
 const TOTAL_LABEL = "Total";
 const TOTAL_HINT = "Valor confirmado no servidor";
@@ -120,6 +129,9 @@ type SaleFormValues = {
   cardType: "debit" | "credit";
   installments: string;
   firstDueDate: string;
+  // Dia local (`yyyy-mm-dd`) da venda (RF-01). Default = hoje, calculado por
+  // fuso da aplicação em tempo de montagem do form (nunca fuso do dispositivo).
+  soldOn: string;
 };
 
 const EMPTY_ITEM: ItemFieldValues = {
@@ -130,6 +142,9 @@ const EMPTY_ITEM: ItemFieldValues = {
   qty: "1",
 };
 
+// `soldOn` nasce vazio aqui — o valor real (hoje, no fuso da aplicação) é
+// calculado na montagem do componente (`buildEmptyValues`), nunca em tempo de
+// carregamento do módulo (o bundle pode ficar em cache no browser por dias).
 const EMPTY_VALUES: SaleFormValues = {
   clientId: null,
   clientName: "",
@@ -140,15 +155,13 @@ const EMPTY_VALUES: SaleFormValues = {
   cardType: "credit",
   installments: "1",
   firstDueDate: "",
+  soldOn: "",
 };
 
-// Preço em reais → centavos, ou `undefined` quando o formato pt-BR não casa
-// (`parseBRLToCents` retorna `null`). `undefined` no payload sinaliza "sem preço
-// válido" — o form marca o erro de campo antes de enviar.
-const parseBRLOrUndefined = (input: string): number | undefined => {
-  const cents = parseBRLToCents(input);
-  return cents === null ? undefined : cents;
-};
+const buildEmptyValues = (): SaleFormValues => ({
+  ...EMPTY_VALUES,
+  soldOn: appLocalDateIso(new Date().toISOString()),
+});
 
 // ---------------------------------------------------------------------------
 // Busca assíncrona debounced (reusa as Server Actions finas — o browser nunca
@@ -549,47 +562,14 @@ const applyContractIssues = (
       setError("firstDueDate", { message: issue.message });
       continue;
     }
+    if (first === "soldOn") {
+      setError("soldOn", { message: issue.message });
+      continue;
+    }
     if (first === "clientId") {
       setError("clientId", { message: issue.message });
     }
   }
-};
-
-// Monta o payload do contrato a partir dos valores do form (strings → centavos/
-// números). Preço inválido vira `undefined` (o contrato o trata como "usar preço
-// atual", mas o preço inválido já é sinalizado ANTES via `PRICE_INVALID_MESSAGE`);
-// qty vazia vira `NaN` para cair na mensagem pt-BR do contrato.
-const buildPayload = (values: SaleFormValues): CreateSaleInput => {
-  const items = values.items.map((item) => {
-    const cents = parseBRLOrUndefined(item.price);
-    const parsedQty = Number(item.qty.trim());
-    return {
-      productId: item.productId,
-      qty: item.qty.trim().length === 0 ? Number.NaN : parsedQty,
-      ...(cents === undefined ? {} : { unitPriceCents: cents }),
-    };
-  });
-
-  const base: CreateSaleInput = {
-    clientId: values.clientId ?? undefined,
-    items,
-    paymentMethod: values.paymentMethod,
-    deliveryStatus: values.deliveryStatus,
-    paymentCondition: values.paymentCondition,
-    installments:
-      values.paymentCondition === "installments"
-        ? values.installments.trim().length === 0
-          ? Number.NaN
-          : Number(values.installments.trim())
-        : 1,
-    ...(values.paymentMethod === "card" ? { cardType: values.cardType } : {}),
-    ...(values.paymentCondition === "installments" &&
-    values.firstDueDate.length > 0
-      ? { firstDueDate: values.firstDueDate }
-      : {}),
-  };
-
-  return base;
 };
 
 // ---------------------------------------------------------------------------
@@ -613,10 +593,14 @@ export function SaleForm() {
     clearErrors,
     formState: { errors },
   } = useForm<SaleFormValues>({
-    defaultValues: EMPTY_VALUES,
+    defaultValues: buildEmptyValues(),
   });
 
   const { fields, append, remove } = useFieldArray({ control, name: "items" });
+
+  // Dia local de hoje (fuso da aplicação — nunca do dispositivo), usado como
+  // teto do campo "Data da venda" e para decidir os padrões do RF-16.
+  const todayLocalDateIso = appLocalDateIso(new Date().toISOString());
 
   const clientId = useWatch({ control, name: "clientId" });
   const clientName = useWatch({ control, name: "clientName" });
@@ -652,6 +636,22 @@ export function SaleForm() {
     setValue("clientName", "");
   }, [setValue]);
 
+  // RF-16: trocar a data recalcula os padrões de entrega/condição de
+  // pagamento (data passada ⇒ entregue + já recebido), mas NÃO trava a
+  // escolha — os dois campos continuam editáveis normalmente depois.
+  const handleSoldOnChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const soldOn = event.target.value;
+      if (soldOn.length === 0) {
+        return;
+      }
+      const defaults = saleFormDateDefaults(soldOn, todayLocalDateIso);
+      setValue("deliveryStatus", defaults.deliveryStatus);
+      setValue("paymentCondition", defaults.paymentCondition);
+    },
+    [setValue, todayLocalDateIso],
+  );
+
   const submit = (values: SaleFormValues) => {
     setFormError(null);
     clearErrors();
@@ -667,13 +667,13 @@ export function SaleForm() {
         });
         hasFieldError = true;
       }
-      if (parseBRLOrUndefined(item.price) === undefined) {
+      if (parseSaleFormPrice(item.price) === undefined) {
         setError(itemPriceName(index), { message: PRICE_INVALID_MESSAGE });
         hasFieldError = true;
       }
     });
 
-    const parsed = createSaleSchema.safeParse(buildPayload(values));
+    const parsed = createSaleSchema.safeParse(buildSaleFormPayload(values));
     if (!parsed.success) {
       applyContractIssues(parsed.error.issues, setError);
       hasFieldError = true;
@@ -699,6 +699,25 @@ export function SaleForm() {
       noValidate
       className="flex flex-col gap-6"
     >
+      <section className="flex flex-col gap-1.5">
+        <Label htmlFor="sale-sold-on">{SOLD_ON_LABEL}</Label>
+        <Input
+          id="sale-sold-on"
+          type="date"
+          min={SOLD_ON_MIN_DATE}
+          max={todayLocalDateIso}
+          className="h-11 w-full md:h-9 md:w-auto"
+          aria-invalid={errors.soldOn ? true : undefined}
+          aria-describedby={errors.soldOn ? "sale-sold-on-error" : undefined}
+          {...register("soldOn", { onChange: handleSoldOnChange })}
+        />
+        {errors.soldOn?.message ? (
+          <p id="sale-sold-on-error" className="text-sm text-destructive">
+            {errors.soldOn.message}
+          </p>
+        ) : null}
+      </section>
+
       <section className="flex flex-col gap-2">
         <h2 className="font-heading text-lg font-semibold">
           {CLIENT_SECTION_LABEL}{" "}

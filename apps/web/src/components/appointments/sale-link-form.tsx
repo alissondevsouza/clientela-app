@@ -9,7 +9,7 @@ import type {
 } from "@/app/(crm)/crm/appointments/actions";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { formatBRL, formatDateBr } from "@/lib/format";
+import { formatBRL, formatLocalDateBr } from "@/lib/format";
 
 const SELECT_LABEL = "Venda vinculada";
 const NONE_OPTION_LABEL = "Sem venda vinculada";
@@ -19,18 +19,13 @@ const EMPTY_HINT = "Nenhuma venda ativa disponível para vincular no momento.";
 const SELECT_ID = "appointment-sale-link";
 const CURRENT_SALE_FALLBACK_LABEL = "Venda vinculada atual";
 
-const ISO_DATE_TIME_SEPARATOR = "T";
-
 const SELECT_CLASS_NAME =
   "h-11 w-full rounded-lg border border-input bg-transparent px-2.5 text-base outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:h-9 md:text-sm";
-
-const toDatePart = (isoDateTime: string): string =>
-  isoDateTime.split(ISO_DATE_TIME_SEPARATOR)[0] ?? isoDateTime;
 
 // O status entra no rótulo: a lista agora mistura venda em aberto e concluída
 // (CRM-12), e a diferença precisa aparecer em TEXTO, não só na escolha.
 const describeSale = (sale: LinkableSale): string =>
-  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatDateBr(toDatePart(sale.soldAt))} · ${SALE_STATUS_LABELS[sale.status]}`;
+  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatLocalDateBr(sale.soldAt)} · ${SALE_STATUS_LABELS[sale.status]}`;
 
 export type SaleLinkFormProps = {
   currentSaleId: string | null;

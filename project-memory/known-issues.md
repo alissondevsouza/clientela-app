@@ -83,3 +83,14 @@ Formato:
 ## ~~Duração da sessão duplicada em constantes independentes (api + web)~~ (resolvido)
 - **O quê**: os 30 dias da sessão viviam em constantes independentes na API e no web (maxAge do cookie).
 - **Resolvido em**: 2026-07-17 (specs/crm-layout, RF-08) — o maxAge do cookie é **derivado do `expiresAt`** retornado pela API no login (`sessionCookieMaxAgeSeconds`, fail-safe 0); constante removida do web; provado fim-a-fim na QA (`Set-Cookie … Max-Age=2591999`).
+
+## Três cópias do bug de fuso na exibição de data, fora do escopo de vendas
+- **O quê**: o padrão `toDatePart` (fatiar o ISO antes do `T`) devolve o dia **UTC**, não o dia local. Um instante de 21:00 em `America/Sao_Paulo` é exibido com a data do dia seguinte.
+- **Onde**: `apps/web/src/components/orders/order-card.tsx`, `apps/web/src/components/leads/lead-card.tsx`, `apps/web/src/app/(crm)/crm/orders/[id]/page.tsx`.
+- **Corrigido no escopo de vendas** em 2026-09-19 (`specs/retroactive-sale-date-and-deletion`, RF-07): os quatro pontos de exibição de data de venda passaram a usar `formatLocalDateBr` de `apps/web/src/lib/format.ts`, com teste de regressão. As três cópias acima ficaram fora por serem datas de outros agregados (pedido, lead) — ampliar aumentaria o diff sem servir ao objetivo da feature.
+- **Custo de fechar**: baixo — o helper já existe e está testado; é trocar a chamada em cada arquivo.
+- **Registrado em**: 2026-09-19 (achado da revisão neutra do CRM-13)
+
+## ~~Comentário de `monthSalesScope` divergia do SQL~~ (resolvido)
+- **O quê**: o comentário de `dashboard.repository.ts` afirmava que o recorte do mês era por `sold_at`, enquanto o SQL usava `completed_at`.
+- **Resolvido em**: 2026-09-19 (`specs/retroactive-sale-date-and-deletion`, RF-15, ADR-0025) — o SQL passou a recortar por `sold_at` e o comentário foi alinhado. A divergência tinha custo real: foi ela que quase fez a spec afirmar que o faturamento do mês continuaria correto para venda retroativa a prazo, quando não continuaria.

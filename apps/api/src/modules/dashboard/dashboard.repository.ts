@@ -33,8 +33,18 @@ const toSafeInteger = (value: string | number, field: string): number => {
 // no intervalo [início do mês, início do próximo mês). Comparação por
 // intervalo (em vez de `date_trunc` na coluna) evita função sobre coluna
 // indexável, embora aqui o filtro dominante seja `consultant_id`.
+//
+// RF-15: o recorte é por `sold_at` (dia em que a venda aconteceu), não por
+// `completed_at` (instante em que a última parcela foi quitada —
+// `sales.repository.ts` `deliver`/`setReceivablePaid`). Uma venda a prazo
+// retroativa nasce `open` com `sold_at` no passado e só ganha `completed_at`
+// quando a última parcela é baixada, possivelmente hoje; recortar por
+// `completed_at` faria o faturamento e o lucro contarem no mês da baixa, e
+// não no mês em que a venda aconteceu — o oposto do que esta feature existe
+// para corrigir. Efeito colateral aceito: o faturamento de um mês passado
+// pode aumentar retroativamente quando uma venda antiga é quitada.
 const monthSalesScope = (consultantId: string): SQL =>
-  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.completedAt} >= date_trunc('month', now()) AND ${sales.completedAt} < date_trunc('month', now()) + interval '1 month'`;
+  sql`${sales.consultantId} = ${consultantId} AND ${sales.status} = ${COMPLETED_STATUS} AND ${sales.soldAt} >= date_trunc('month', now()) AND ${sales.soldAt} < date_trunc('month', now()) + interval '1 month'`;
 
 // Única camada que toca o banco (api.md/database.md). Leitura agregada
 // cross-tabela (sales/sale_items/receivables/consultants) é o domínio do

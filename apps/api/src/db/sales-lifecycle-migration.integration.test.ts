@@ -25,6 +25,7 @@ const PRE_EXPANSION_MIGRATIONS = [
 const EXPANSION_MIGRATION = "0011_lively_morg.sql";
 const BACKFILL_MIGRATION = "0012_sales_lifecycle_backfill.sql";
 const CONTRACTION_MIGRATION = "0013_optimal_midnight.sql";
+const RETROACTIVE_DATES_MIGRATION = "0014_brief_lifeguard.sql";
 
 type PgClient = ReturnType<typeof createDb>["sql"];
 
@@ -136,7 +137,7 @@ const stopDatabase = async (
   }
 };
 
-describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () => {
+describe("backfill CRM-12/13 0010 → 0011 → 0012 → 0013 → 0014 (integração)", () => {
   it(
     "transforma todas as classes legadas sem alterar snapshots, estoque ou valores",
     async () => {
@@ -281,6 +282,7 @@ describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () =>
         await applyMigration(sql, EXPANSION_MIGRATION);
         await applyMigration(sql, BACKFILL_MIGRATION);
         await applyMigration(sql, CONTRACTION_MIGRATION);
+        await applyMigration(sql, RETROACTIVE_DATES_MIGRATION);
 
         const sales = await sql<
           {
@@ -289,6 +291,9 @@ describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () =>
             paymentCondition: string;
             installments: number;
             paymentPlanKnown: boolean;
+            totalCents: number;
+            soldAt: string;
+            createdAt: string;
             deliveredAt: string;
             completedAt: string | null;
             canceledAt: string | null;
@@ -297,6 +302,9 @@ describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () =>
         >`
           SELECT id, status, payment_condition AS "paymentCondition", installments,
             payment_plan_known AS "paymentPlanKnown",
+            total_cents AS "totalCents",
+            to_char(sold_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "soldAt",
+            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt",
             to_char(delivered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "deliveredAt",
             to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "completedAt",
             to_char(canceled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "canceledAt",
@@ -311,6 +319,9 @@ describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () =>
           paymentCondition: "received",
           installments: 1,
           paymentPlanKnown: true,
+          totalCents: 1000,
+          soldAt,
+          createdAt,
           completedAt: soldAt,
         });
         expect(byId.get(immediateZero.id)).toMatchObject({
@@ -469,6 +480,32 @@ describe("backfill CRM-12 0010 → 0011 → 0012 → 0013 (integração)", () =>
               (row) => row.dueKind === "scheduled" && row.voidedAt === null,
             ),
         ).toBe(true);
+
+        await sql`
+          UPDATE sales
+          SET sold_at = created_at - interval '1 second'
+          WHERE id = ${immediatePaid.id}
+        `;
+        await sql`
+          UPDATE receivables
+          SET paid_at = created_at - interval '1 second'
+          WHERE sale_id = ${immediatePaid.id}
+        `;
+
+        const [retroactiveValues] = await sql<
+          { saleSoldAt: string; receivablePaidAt: string }[]
+        >`
+          SELECT
+            to_char(sales.sold_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "saleSoldAt",
+            to_char(receivables.paid_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "receivablePaidAt"
+          FROM sales
+          INNER JOIN receivables ON receivables.sale_id = sales.id
+          WHERE sales.id = ${immediatePaid.id}
+        `;
+        expect(retroactiveValues).toEqual({
+          saleSoldAt: "2026-06-01T11:59:59.000Z",
+          receivablePaidAt: "2026-06-02T11:59:59.000Z",
+        });
       } finally {
         await stopDatabase(sql, container);
       }

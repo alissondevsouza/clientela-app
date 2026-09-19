@@ -10,7 +10,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { formatBRL, formatDateBr } from "@/lib/format";
+import { formatBRL, formatLocalDateBr } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const COMPLETE_LABEL = "Marcar como realizado";
@@ -53,16 +53,11 @@ const NOTES_LABEL = "Observações";
 const SAVE_NOTES_LABEL = "Salvar observações";
 const SAVING_NOTES_LABEL = "Salvando...";
 
-const ISO_DATE_TIME_SEPARATOR = "T";
-
 const SELECT_CLASS_NAME =
   "h-11 w-full rounded-lg border border-input bg-transparent px-2.5 text-base outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:h-9 md:text-sm";
 
-const toDatePart = (isoDateTime: string): string =>
-  isoDateTime.split(ISO_DATE_TIME_SEPARATOR)[0] ?? isoDateTime;
-
 const describeSale = (sale: LinkableSale): string =>
-  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatDateBr(toDatePart(sale.soldAt))}`;
+  `${sale.clientName} · ${formatBRL(sale.totalCents)} · ${formatLocalDateBr(sale.soldAt)}`;
 
 type NoArgAction = () => Promise<AppointmentActionResult>;
 

@@ -9,6 +9,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "harness:check": "bash .codex/scripts/check-harness.sh",
+    "build": "bun run --filter='@clientela/web' build",
     "typecheck": "bun run --filter='*' typecheck",
     "test": "vitest run",
     "test:watch": "vitest"

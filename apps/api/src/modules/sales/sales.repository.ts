@@ -545,6 +545,82 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     });
   };
 
+  // Exclusão transacional (RF-08/RF-09/RF-10/RF-11/RF-12/RF-13). Verbo distinto
+  // do cancelamento (RF-14): a venda "nunca existiu", não "existiu e não se
+  // concretizou" — por isso NÃO há guarda de estado nenhuma aqui: cobrança já
+  // paga é permitida (RF-10, ao contrário do cancel, que bloqueia) e não há
+  // trava de prazo (RF-13, qualquer data). FOR UPDATE trava a linha da venda
+  // ANTES de decidir, serializando com cancel/deliver/setReceivablePaid
+  // concorrentes sobre a MESMA venda (mesmo padrão de lock do cancel/deliver).
+  //
+  // Estoque tem três estados e só UM devolve (RF-09) — errar aqui credita em
+  // dobro, silenciosamente:
+  //   (a) entregue e NÃO cancelada  ⇒ devolve (a venda debitou e nunca foi
+  //       revertida);
+  //   (b) aberta e não entregue     ⇒ não toca (nunca debitou; a reserva é
+  //       derivada da própria linha e desaparece com o DELETE, nada a fazer);
+  //   (c) já cancelada              ⇒ não toca (o cancel já devolveu, se havia
+  //       o que devolver — devolver de novo dobraria o crédito).
+  // Item com product_id nulo (produto excluído depois da venda, ADR-0013 item
+  // 2) é ignorado: não há linha de produto para creditar.
+  const remove = async (
+    consultantId: string,
+    saleId: string,
+  ): Promise<void> => {
+    await db.transaction(async (tx) => {
+      const [saleRow] = await tx
+        .select({ status: sales.status, deliveredAt: sales.deliveredAt })
+        .from(sales)
+        .where(and(eq(sales.id, saleId), eq(sales.consultantId, consultantId)))
+        .for("update");
+      // Mesmo 404 para inexistente e para venda de outra consultora (RF-12) —
+      // não vaza existência.
+      if (!saleRow) {
+        throw new SaleNotFoundError();
+      }
+
+      const shouldRestock =
+        saleRow.deliveredAt !== null && saleRow.status !== CANCELED_STATUS;
+
+      if (shouldRestock) {
+        // Itens ORDENADOS por product_id (mesma ordem da baixa em `create` —
+        // anti-deadlock), ignorando os que já perderam o produto.
+        const itemsToRestock = await tx
+          .select({ productId: saleItems.productId, qty: saleItems.qty })
+          .from(saleItems)
+          .where(
+            and(eq(saleItems.saleId, saleId), isNotNull(saleItems.productId)),
+          )
+          .orderBy(asc(saleItems.productId));
+
+        for (const item of itemsToRestock) {
+          // isNotNull já filtra, mas o tipo permanece nullable — guarda
+          // explícita (mesmo padrão do cancel).
+          if (item.productId === null) {
+            continue;
+          }
+          await tx
+            .update(products)
+            .set({ stockQty: sql`${products.stockQty} + ${item.qty}` })
+            .where(
+              and(
+                eq(products.id, item.productId),
+                eq(products.consultantId, consultantId),
+              ),
+            );
+        }
+      }
+
+      // DELETE na mesma transação da reversão de estoque (nunca `DELETE` cru):
+      // a cascata do banco leva sale_items e receivables (onDelete cascade);
+      // appointments.sale_id vira NULL pela FK (onDelete set null) — o
+      // compromisso sobrevive, só perde o vínculo (RF-11).
+      await tx
+        .delete(sales)
+        .where(and(eq(sales.id, saleId), eq(sales.consultantId, consultantId)));
+    });
+  };
+
   const deliver = async (consultantId: string, saleId: string): Promise<Sale> =>
     db.transaction(async (tx) => {
       const [saleRow] = await tx
@@ -830,6 +906,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     list,
     getById,
     cancel,
+    remove,
     deliver,
     listReceivables,
     receivablesSummary,
