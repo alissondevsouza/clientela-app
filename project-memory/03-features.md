@@ -25,16 +25,16 @@ O mínimo que substitui o caderno/planilha.
 - [ ] **Leads** — lista dos cadastros vindos da landing, com status (novo → contatado → virou cliente / descartado).
 - [ ] **Produtos & estoque** — catálogo dela: preço de custo, preço de venda, quantidade em mãos. Alerta de estoque baixo. Visão de capital parado em produto.
 - [ ] **Vendas** — registrar venda: cliente, itens, valor, forma de pagamento e **data da venda** (pré-preenchida com hoje, alterável para qualquer data passada — permite reinserir histórico e lançar em lote; ADR-0025). Suporte a **fiado/parcelado** com controle de "quem me deve" e baixa de pagamento. Venda dá baixa no estoque. **Cancelar** (a venda existiu e não se concretizou) e **excluir** (a venda nunca existiu — duplicata, erro de digitação) são ações distintas e coexistem; excluir reverte o estoque conforme o estado da venda (ADR-0024).
-- [ ] **Dashboard** — vendas do mês, lucro estimado (venda − custo), a receber, meta mensal. O mês é recortado pela **data da venda** (ADR-0025). Leitura de períodos anteriores ao mês corrente é o item CRM-14 do roadmap.
+- [ ] **Home / dashboard** — a home do CRM é a **central do dia** (bloco Hoje: cobranças com WhatsApp e mensagem pronta, compromissos de hoje, vendas a entregar, leads novos, encomendas sem estoque, aniversariantes da semana), com **Desempenho por período** (mês, ano, tudo ou intervalo de meses; comparação com o mesmo trecho do período equivalente; **Vendido**, Recebido, Lucro estimado, ticket; gráfico de 12 meses; meta por mês com ritmo; mais vendidos e melhores clientes) e **Posição agora** (a receber, em atraso, estoque). Todo número leva à lista filtrada que o gerou. CRM-14, ADR-0026/0027.
 
 ## Fase 3 — Relacionamento (a funcionalidade matadora)
 
 O que gera recompra: lembrar de falar com a cliente certa na hora certa.
 
 - [ ] **Lembretes de recompra** — produto consumível comprado há X dias ⇒ sugerir follow-up ("a base da Maria deve estar acabando").
-- [ ] **Aniversariantes** — lista da semana/mês com mensagem pronta.
+- [ ] **Aniversariantes** — lista da semana/mês com mensagem pronta. A semana (hoje até hoje + 7) já está no bloco Hoje da home (CRM-14); falta a lista do mês inteiro.
 - [ ] **Follow-up de leads** — lead sem contato há N dias aparece em destaque.
-- [ ] **Central de tarefas do dia** — tela única "com quem falar hoje", cada item com botão que abre o WhatsApp com mensagem modelo preenchida.
+- [ ] **Central de tarefas do dia** — "com quem falar hoje", cada item com botão que abre o WhatsApp com mensagem modelo preenchida. **Entregue como a própria home do CRM** (bloco Hoje — CRM-14, ADR-0026); recompra e leads parados entram nela quando existirem.
 
 ## Fase 4 — Marketing e extras (conforme necessidade)
 

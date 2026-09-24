@@ -1,8 +1,9 @@
 "use client";
 
-import { type UpdateGoalInput, updateGoalSchema } from "@clientela/shared";
+import type { DashboardPerformance, UpdateGoalInput } from "@clientela/shared";
+import { updateGoalSchema } from "@clientela/shared";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import type { UpdateGoalActionResult } from "@/app/(crm)/crm/actions";
@@ -12,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { centsToReaisInput, formatBRL, parseBRLToCents } from "@/lib/format";
 import { goalProgressPercent } from "@/lib/goal-progress";
+import { goalOriginText, goalPaceText } from "@/lib/goal-view";
 
 const TITLE = "Meta do mês";
 const GOAL_INPUT_ID = "monthly-goal";
@@ -19,6 +21,7 @@ const GOAL_LABEL = "Meta (R$)";
 const GOAL_PLACEHOLDER = "0,00";
 const GOAL_INVALID_MESSAGE = "Meta inválida — use o formato 1.500,00";
 const NO_GOAL_TEXT = "Você ainda não definiu uma meta para este mês.";
+const NO_GOAL_PAST_MONTH_TEXT = "Sem meta neste mês.";
 const CTA_LABEL = "Definir meta";
 const EDIT_LABEL = "Editar meta";
 const REMOVE_LABEL = "Remover meta";
@@ -35,15 +38,26 @@ const clampPercent = (percent: number): number =>
 
 // Texto de progresso (equivalente acessível ao `aria-valuetext`): o percentual
 // REAL (sem cap) sempre aparece no texto — só a barra visual é capada em 100%
-// (RF-05/RF-07).
+// (RF-06/RF-10).
 const progressText = (
-  salesCents: number,
+  soldCents: number,
   goalCents: number,
   percent: number,
 ): string =>
-  `${formatBRL(salesCents)} de ${formatBRL(goalCents)} (${percent}% da meta)`;
+  `${formatBRL(soldCents)} de ${formatBRL(goalCents)} (${percent}% da meta)`;
 
 type GoalCardMode = "view" | "edit";
+
+// Qual ação está em voo (S1, rodada 2): sem isso, o botão errado mostrava
+// "Removendo..." durante um SALVAMENTO (os dois botões compartilhavam o mesmo
+// `isPending` do `useTransition`, que não distingue qual ação disparou a
+// transição).
+type PendingGoalAction = "save" | "remove" | null;
+
+// Bloco `goal` de `GET /dashboard/performance` (RF-10/RF-11) — só presente
+// quando o período é um mês isolado (`period.kind === "month"`); o próprio
+// `GoalCard` só é montado pela `PerformanceSection` quando `goal !== null`.
+export type DashboardGoal = NonNullable<DashboardPerformance["goal"]>;
 
 // Campo de dinheiro digitado em reais (mesmo padrão de `product-form.tsx`): a
 // string é convertida para centavos por `parseBRLToCents` (aritmética de
@@ -76,8 +90,12 @@ const goalDefaultValue = (
 });
 
 export type GoalCardProps = {
-  monthlyGoalCents: number | null;
-  monthSalesCents: number;
+  /** Bloco `goal` do RF-10/RF-11 (não nulo — a `PerformanceSection` só renderiza este card quando há). */
+  goal: DashboardGoal;
+  /** Vendido (RF-05) do mês da meta — base do progresso e do ritmo, nunca "vendas concluídas". */
+  soldCents: number;
+  /** Mês (`yyyy-mm`) do período exibido — `performance.period.fromMonth` (S2, rodada 2: distingue mês corrente de mês passado no texto de origem). */
+  month: string;
   // Referência direta à Server Action (`updateGoalAction`, `"use server"`) —
   // NÃO um closure/adaptador criado no Server Component: só a própria action
   // pode cruzar a fronteira RSC → client como prop de função (web.md/lesson
@@ -87,27 +105,50 @@ export type GoalCardProps = {
 };
 
 type GoalProgressViewProps = {
-  monthSalesCents: number;
-  monthlyGoalCents: number;
-  isPending: boolean;
+  soldCents: number;
+  goalCents: number;
+  source: DashboardGoal["source"];
+  inheritedFromMonth: string | null;
+  month: string;
+  editable: boolean;
+  daysRemaining: number;
+  pendingAction: PendingGoalAction;
   onEdit: () => void;
   onRemove: () => void;
 };
 
-// Progresso com meta definida: barra visual CAPADA em 100% (`clampPercent`) +
-// texto com o percentual REAL (sem cap) — extraído do `GoalCard` para evitar
-// IIFE no JSX (core.md: funções pequenas com uma responsabilidade).
+// Progresso com meta definida: origem (explícita/herdada), barra visual
+// CAPADA em 100% (`clampPercent`) + texto com o percentual REAL (sem cap) e,
+// no mês corrente, o ritmo (RF-10). Mês passado mostra o resultado sem ritmo
+// e sem botões de edição.
 function GoalProgressView({
-  monthSalesCents,
-  monthlyGoalCents,
-  isPending,
+  soldCents,
+  goalCents,
+  source,
+  inheritedFromMonth,
+  month,
+  editable,
+  daysRemaining,
+  pendingAction,
   onEdit,
   onRemove,
 }: GoalProgressViewProps) {
-  const percent = goalProgressPercent(monthSalesCents, monthlyGoalCents);
+  const percent = goalProgressPercent(soldCents, goalCents);
+  const originText = goalOriginText(
+    source,
+    inheritedFromMonth,
+    month,
+    editable,
+  );
+  const paceText = editable
+    ? goalPaceText({ soldCents, goalCents, daysRemaining })
+    : null;
+  const isRemoving = pendingAction === "remove";
+  const isBusy = pendingAction !== null;
 
   return (
     <div className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">{originText}</p>
       <div
         role="progressbar"
         aria-valuemin={ARIA_MIN}
@@ -122,55 +163,105 @@ function GoalProgressView({
         />
       </div>
       <p className="text-sm text-muted-foreground">
-        {progressText(monthSalesCents, monthlyGoalCents, percent)}
+        {progressText(soldCents, goalCents, percent)}
       </p>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onEdit}
-          disabled={isPending}
-          className="h-11 md:h-8"
-        >
-          {EDIT_LABEL}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={onRemove}
-          disabled={isPending}
-          className="h-11 md:h-8"
-        >
-          {isPending ? REMOVING_LABEL : REMOVE_LABEL}
-        </Button>
-      </div>
+      {paceText !== null ? (
+        <p className="text-sm font-medium">{paceText}</p>
+      ) : null}
+      {editable ? (
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onEdit}
+            disabled={isBusy}
+            className="h-11 md:h-8"
+          >
+            {EDIT_LABEL}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={onRemove}
+            disabled={isBusy}
+            className="h-11 md:h-8"
+          >
+            {isRemoving ? REMOVING_LABEL : REMOVE_LABEL}
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-// Card de meta mensal (Client Component — RF-05, única folha interativa do
-// painel; a página `/crm` permanece RSC). Sem meta ⇒ CTA "Definir meta". Com
-// meta ⇒ barra de progresso (CAPADA visualmente em 100%, `%` REAL exibido no
-// texto — pode passar de 100) + edição/remoção em reais. A11y (RF-07):
-// `role="progressbar"` com `aria-valuenow` clampado a [0,100] (contrato ARIA
-// exige o valor dentro do range) e `aria-valuetext` com o percentual real por
-// extenso — o texto visível ao lado também mostra o número real, sem cap.
+type NoGoalViewProps = {
+  editable: boolean;
+  isBusy: boolean;
+  onDefine: () => void;
+};
+
+// Sem meta (RF-10/RF-24): CTA no mês corrente ("Definir meta"); no mês
+// passado só o resultado ("Sem meta neste mês"), sem ação.
+function NoGoalView({ editable, isBusy, onDefine }: NoGoalViewProps) {
+  if (!editable) {
+    return (
+      <p className="text-sm text-muted-foreground">{NO_GOAL_PAST_MONTH_TEXT}</p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">{NO_GOAL_TEXT}</p>
+      <Button
+        type="button"
+        onClick={onDefine}
+        disabled={isBusy}
+        className="h-11 w-full md:h-9 md:w-auto md:self-start"
+      >
+        {CTA_LABEL}
+      </Button>
+    </div>
+  );
+}
+
+// Card de meta mensal (Client Component — RF-10/RF-24, única folha
+// interativa do bloco Desempenho). Edição/remoção só quando `goal.editable`
+// (mês corrente — RF-10 não permite editar mês passado/futuro nesta feature).
 export function GoalCard({
-  monthlyGoalCents,
-  monthSalesCents,
+  goal,
+  soldCents,
+  month,
   onUpdateGoal,
 }: GoalCardProps) {
   const [mode, setMode] = useState<GoalCardMode>("view");
   const [isPending, startTransition] = useTransition();
+  const [pendingAction, setPendingAction] = useState<PendingGoalAction>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Se a última ação terminou com sucesso — só sai do modo de edição quando a
+  // transição REALMENTE termina (`isPending` volta a `false`), nunca logo
+  // depois do `await` da action (S1, rodada 2): até lá o `goal` da prop ainda
+  // é o valor ANTIGO (o RSC só recarrega quando a transição termina); sair do
+  // modo de edição mais cedo mostrava o card de volta com o valor antigo.
+  const succeededActionRef = useRef(false);
 
   const form = useForm<GoalFormFieldValues, unknown, GoalFormValues>({
     resolver: zodResolver(goalFormSchema),
-    defaultValues: goalDefaultValue(monthlyGoalCents),
+    defaultValues: goalDefaultValue(goal.goalCents),
   });
 
+  useEffect(() => {
+    if (isPending) {
+      return;
+    }
+    if (succeededActionRef.current) {
+      succeededActionRef.current = false;
+      setMode("view");
+    }
+    setPendingAction(null);
+  }, [isPending]);
+
   const openEdit = () => {
-    form.reset(goalDefaultValue(monthlyGoalCents));
+    form.reset(goalDefaultValue(goal.goalCents));
     setErrorMessage(null);
     setMode("edit");
   };
@@ -180,25 +271,34 @@ export function GoalCard({
     setMode("view");
   };
 
-  const applyGoal = (nextGoalCents: number | null) => {
+  const applyGoal = (
+    nextGoalCents: number | null,
+    action: Exclude<PendingGoalAction, null>,
+  ) => {
     setErrorMessage(null);
+    setPendingAction(action);
     startTransition(async () => {
       const result = await onUpdateGoal({ monthlyGoalCents: nextGoalCents });
       if (!result.ok) {
         setErrorMessage(result.message);
+        succeededActionRef.current = false;
         return;
       }
-      setMode("view");
+      succeededActionRef.current = true;
     });
   };
 
   const submit = (values: GoalFormValues) => {
-    applyGoal(values.monthlyGoalCents);
+    applyGoal(values.monthlyGoalCents, "save");
   };
 
   const removeGoal = () => {
-    applyGoal(null);
+    applyGoal(null, "remove");
   };
+
+  const isBusy = pendingAction !== null;
+  const isSaving = pendingAction === "save";
+  const isRemoving = pendingAction === "remove";
 
   const goalError = form.formState.errors.monthlyGoalCents?.message;
 
@@ -234,27 +334,27 @@ export function GoalCard({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" disabled={isPending} className="h-11 md:h-8">
-          {isPending ? SAVING_LABEL : SAVE_LABEL}
+        <Button type="submit" disabled={isBusy} className="h-11 md:h-8">
+          {isSaving ? SAVING_LABEL : SAVE_LABEL}
         </Button>
         <Button
           type="button"
           variant="outline"
           onClick={closeEdit}
-          disabled={isPending}
+          disabled={isBusy}
           className="h-11 md:h-8"
         >
           {CANCEL_LABEL}
         </Button>
-        {monthlyGoalCents !== null ? (
+        {goal.goalCents !== null ? (
           <Button
             type="button"
             variant="ghost"
             onClick={removeGoal}
-            disabled={isPending}
+            disabled={isBusy}
             className="h-11 md:h-8"
           >
-            {isPending ? REMOVING_LABEL : REMOVE_LABEL}
+            {isRemoving ? REMOVING_LABEL : REMOVE_LABEL}
           </Button>
         ) : null}
       </div>
@@ -262,22 +362,22 @@ export function GoalCard({
   );
 
   const viewContent =
-    monthlyGoalCents === null ? (
-      <div className="flex flex-col gap-3">
-        <p className="text-sm text-muted-foreground">{NO_GOAL_TEXT}</p>
-        <Button
-          type="button"
-          onClick={openEdit}
-          className="h-11 w-full md:h-9 md:w-auto md:self-start"
-        >
-          {CTA_LABEL}
-        </Button>
-      </div>
+    goal.goalCents === null ? (
+      <NoGoalView
+        editable={goal.editable}
+        isBusy={isBusy}
+        onDefine={openEdit}
+      />
     ) : (
       <GoalProgressView
-        monthSalesCents={monthSalesCents}
-        monthlyGoalCents={monthlyGoalCents}
-        isPending={isPending}
+        soldCents={soldCents}
+        goalCents={goal.goalCents}
+        source={goal.source}
+        inheritedFromMonth={goal.inheritedFromMonth}
+        month={month}
+        editable={goal.editable}
+        daysRemaining={goal.daysRemaining}
+        pendingAction={pendingAction}
         onEdit={openEdit}
         onRemove={removeGoal}
       />

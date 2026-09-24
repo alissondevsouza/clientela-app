@@ -35,6 +35,26 @@ export const SALE_STATUS_LABELS: Record<SaleStatus, string> = {
   canceled: "Cancelada",
 };
 
+// Valor de filtro exclusivo da listagem (RF-14): "sold" NÃO é um `SaleStatus`
+// gravado no banco — é o escopo Vendido (open ∪ completed, o mesmo escopo do
+// painel), mapeado pelo service. Fica separado de `saleStatusValues` para não
+// vazar um status inexistente para o domínio de venda.
+export const salesListStatusFilterValues = [
+  ...saleStatusValues,
+  "sold",
+] as const;
+
+export type SalesListStatusFilter =
+  (typeof salesListStatusFilterValues)[number];
+
+export const SALES_LIST_STATUS_FILTER_LABELS: Record<
+  SalesListStatusFilter,
+  string
+> = {
+  ...SALE_STATUS_LABELS,
+  sold: "Vendidas",
+};
+
 export const deliveryStatusValues = ["pending", "delivered"] as const;
 
 export type DeliveryStatus = (typeof deliveryStatusValues)[number];
@@ -232,6 +252,38 @@ export const SOLD_ON_MIN_DATE = "2015-01-01";
 const SOLD_ON_MIN_DATE_MESSAGE =
   "A data da venda não pode ser anterior a 01/01/2015";
 const STATUS_INVALID_MESSAGE = "Status de venda inválido";
+const SOLD_FROM_INVALID_MESSAGE =
+  "Informe a data inicial da venda (data válida)";
+const SOLD_TO_INVALID_MESSAGE = "Informe a data final da venda (data válida)";
+const SOLD_RANGE_INVALID_MESSAGE =
+  "A data inicial da venda não pode ser depois da data final";
+// Teto para os filtros de data da listagem (A3, rodada 2): sem ele, uma data
+// como "9999-12-31" passa no `z.iso.date()` e quebra em 500 no service, que
+// calcula o dia SEGUINTE ao fim do intervalo (`appLocalDayRangeUtc`,
+// `time.ts`) — "10000-01-01" não existe para o parser. Bem além de qualquer
+// venda real, mas finito o bastante para nunca estourar o cálculo.
+export const DATE_FILTER_MAX_DATE = "2099-12-31";
+const DATE_FILTER_RANGE_MESSAGE = "entre 01/01/2015 e 31/12/2099";
+const SOLD_FROM_RANGE_MESSAGE = `A data inicial da venda deve estar ${DATE_FILTER_RANGE_MESSAGE}`;
+const SOLD_TO_RANGE_MESSAGE = `A data final da venda deve estar ${DATE_FILTER_RANGE_MESSAGE}`;
+const PAID_FROM_RANGE_MESSAGE = `A data inicial do recebimento deve estar ${DATE_FILTER_RANGE_MESSAGE}`;
+const PAID_TO_RANGE_MESSAGE = `A data final do recebimento deve estar ${DATE_FILTER_RANGE_MESSAGE}`;
+
+const isOutOfDateFilterRange = (date: string): boolean =>
+  date < SOLD_ON_MIN_DATE || date > DATE_FILTER_MAX_DATE;
+const DELIVERY_STATUS_INVALID_MESSAGE = "Situação de entrega inválida";
+const OVERDUE_INVALID_MESSAGE =
+  "Informe se deseja somente as cobranças atrasadas (true ou false)";
+const OVERDUE_REQUIRES_PENDING_MESSAGE =
+  "O filtro de atrasadas só pode ser usado junto com as cobranças pendentes";
+const PAID_FROM_INVALID_MESSAGE =
+  "Informe a data inicial do recebimento (data válida)";
+const PAID_TO_INVALID_MESSAGE =
+  "Informe a data final do recebimento (data válida)";
+const PAID_RANGE_REQUIRES_NOT_PENDING_MESSAGE =
+  "O filtro de período recebido só pode ser usado com as cobranças já pagas (pending=false)";
+const PAID_RANGE_INVALID_MESSAGE =
+  "A data inicial do recebimento não pode ser depois da data final";
 const PAYMENT_METHOD_REQUIRED_MESSAGE = "Escolha a forma de pagamento";
 const DELIVERY_STATUS_REQUIRED_MESSAGE = "Informe a situação da entrega";
 const PAYMENT_CONDITION_REQUIRED_MESSAGE = "Escolha a condição de pagamento";
@@ -515,13 +567,52 @@ export const saleListItemSchema = saleSchema.omit({
 
 export type SaleListItem = z.infer<typeof saleListItemSchema>;
 
-// Query da listagem de vendas: paginação padrão + filtros opcionais.
-export const salesListQuerySchema = paginationQuerySchema.extend({
-  status: z
-    .enum(saleStatusValues, { error: STATUS_INVALID_MESSAGE })
-    .optional(),
-  clientId: z.uuid({ error: CLIENT_ID_INVALID_MESSAGE }).optional(),
-});
+// Query da listagem de vendas: paginação padrão + filtros opcionais. `status`
+// aceita o escopo Vendido (RF-14) além dos status reais; `soldFrom`/`soldTo`
+// são dias locais (`yyyy-mm-dd`) INDEPENDENTES entre si — o service converte
+// para bounds UTC (packages/shared/src/time.ts), nunca aqui (plan.md).
+export const salesListQuerySchema = paginationQuerySchema
+  .extend({
+    status: z
+      .enum(salesListStatusFilterValues, { error: STATUS_INVALID_MESSAGE })
+      .optional(),
+    clientId: z.uuid({ error: CLIENT_ID_INVALID_MESSAGE }).optional(),
+    soldFrom: z.iso.date({ error: SOLD_FROM_INVALID_MESSAGE }).optional(),
+    soldTo: z.iso.date({ error: SOLD_TO_INVALID_MESSAGE }).optional(),
+    delivery: z
+      .enum(deliveryStatusValues, { error: DELIVERY_STATUS_INVALID_MESSAGE })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.soldFrom !== undefined &&
+      isOutOfDateFilterRange(value.soldFrom)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["soldFrom"],
+        message: SOLD_FROM_RANGE_MESSAGE,
+      });
+    }
+    if (value.soldTo !== undefined && isOutOfDateFilterRange(value.soldTo)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["soldTo"],
+        message: SOLD_TO_RANGE_MESSAGE,
+      });
+    }
+    if (
+      value.soldFrom !== undefined &&
+      value.soldTo !== undefined &&
+      value.soldFrom > value.soldTo
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["soldTo"],
+        message: SOLD_RANGE_INVALID_MESSAGE,
+      });
+    }
+  });
 
 export type SalesListQueryInput = z.input<typeof salesListQuerySchema>;
 export type SalesListQuery = z.output<typeof salesListQuerySchema>;
@@ -534,9 +625,74 @@ const pendingQuerySchema = z
   .transform((value) => (typeof value === "boolean" ? value : value === "true"))
   .default(true);
 
-export const receivablesListQuerySchema = paginationQuerySchema.extend({
-  pending: pendingQuerySchema,
-});
+// `overdue` default false: só filtra as atrasadas quando pedido explicitamente
+// (RF-15). Mesma técnica de coerção de `pendingQuerySchema`, com mensagem pt-BR
+// própria no nível da união (cobre também o valor de tipo inválido).
+const overdueQuerySchema = z
+  .union([z.boolean(), z.enum(["true", "false"])], {
+    error: OVERDUE_INVALID_MESSAGE,
+  })
+  .transform((value) => (typeof value === "boolean" ? value : value === "true"))
+  .default(false);
+
+// `paidFrom`/`paidTo`: dias locais INDEPENDENTES entre si (RF-15), só válidos
+// com `pending=false` — a mesma conversão para bounds UTC fica no service.
+export const receivablesListQuerySchema = paginationQuerySchema
+  .extend({
+    pending: pendingQuerySchema,
+    overdue: overdueQuerySchema,
+    paidFrom: z.iso.date({ error: PAID_FROM_INVALID_MESSAGE }).optional(),
+    paidTo: z.iso.date({ error: PAID_TO_INVALID_MESSAGE }).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.overdue && !value.pending) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["overdue"],
+        message: OVERDUE_REQUIRES_PENDING_MESSAGE,
+      });
+    }
+
+    const hasPaidRange =
+      value.paidFrom !== undefined || value.paidTo !== undefined;
+    if (hasPaidRange && value.pending) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidFrom"],
+        message: PAID_RANGE_REQUIRES_NOT_PENDING_MESSAGE,
+      });
+    }
+
+    if (
+      value.paidFrom !== undefined &&
+      isOutOfDateFilterRange(value.paidFrom)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidFrom"],
+        message: PAID_FROM_RANGE_MESSAGE,
+      });
+    }
+    if (value.paidTo !== undefined && isOutOfDateFilterRange(value.paidTo)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidTo"],
+        message: PAID_TO_RANGE_MESSAGE,
+      });
+    }
+
+    if (
+      value.paidFrom !== undefined &&
+      value.paidTo !== undefined &&
+      value.paidFrom > value.paidTo
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["paidTo"],
+        message: PAID_RANGE_INVALID_MESSAGE,
+      });
+    }
+  });
 
 export type ReceivablesListQueryInput = z.input<
   typeof receivablesListQuerySchema

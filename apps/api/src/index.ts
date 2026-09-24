@@ -15,8 +15,9 @@ import {
 } from "./modules/auth/auth.service";
 import { createClientsRepository } from "./modules/clients/clients.repository";
 import { createClientsService } from "./modules/clients/clients.service";
-import { createDashboardRepository } from "./modules/dashboard/dashboard.repository";
 import { createDashboardService } from "./modules/dashboard/dashboard.service";
+import { createDashboardPerformanceRepository } from "./modules/dashboard/dashboard-performance.repository";
+import { createDashboardTodayRepository } from "./modules/dashboard/dashboard-today.repository";
 import { createLeadsRepository } from "./modules/leads/leads.repository";
 import { createLeadsService } from "./modules/leads/leads.service";
 import { createOrdersRepository } from "./modules/orders/orders.repository";
@@ -72,14 +73,19 @@ const productsService = createProductsService({
 });
 
 const salesRepository = createSalesRepository(db);
-const salesService = createSalesService({ repository: salesRepository });
+const salesService = createSalesService({
+  repository: salesRepository,
+  clock: () => new Date(),
+});
 
 const ordersRepository = createOrdersRepository(db);
 const ordersService = createOrdersService({ repository: ordersRepository });
 
-const dashboardRepository = createDashboardRepository(db);
+const dashboardPerformanceRepository = createDashboardPerformanceRepository(db);
+const dashboardTodayRepository = createDashboardTodayRepository(db);
 const dashboardService = createDashboardService({
-  repository: dashboardRepository,
+  performanceRepository: dashboardPerformanceRepository,
+  todayRepository: dashboardTodayRepository,
   clock: () => new Date(),
 });
 

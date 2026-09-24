@@ -1,11 +1,21 @@
-import type { CreateSale } from "@clientela/shared";
+import type {
+  CreateSale,
+  Receivable,
+  ReceivablesSummary,
+  Sale,
+} from "@clientela/shared";
 import { describe, expect, it } from "vitest";
 import { InvalidSaleCreditError, InvalidSaleDateError } from "./sales.errors";
 import {
   composeSaleCreation,
+  createSalesService,
   derivePaymentProjection,
   deriveReceivableStatus,
+  type ListReceivablesParams,
+  type ReceivableWithSale,
+  type SaleCreationRequest,
   type SaleProductSnapshot,
+  type SalesRepositoryPort,
 } from "./sales.service";
 
 const PRODUCT_ID = "11111111-1111-7111-8111-111111111111";
@@ -473,5 +483,160 @@ describe("projeções de pagamento", () => {
     expect(
       deriveReceivableStatus({ paidAt: null, voidedAt: TRANSACTION_NOW }),
     ).toBe("voided");
+  });
+});
+
+// Task 3.1 (crm-home-period-and-daily-hub, RF-04): o service calcula "hoje"
+// (dia local, APP_TIME_ZONE) a partir do relógio injetado e o repassa ao
+// repository em toda leitura que projeta `overdue` de cobrança. Fake explícito
+// (testing.md) em vez de vi.mock — DI por construtor já torna o mock
+// desnecessário.
+describe("createSalesService — relógio injetado (today local)", () => {
+  const SALE_ID = "22222222-2222-7222-8222-222222222222";
+  const RECEIVABLE_ID = "33333333-3333-7333-8333-333333333333";
+  // 2026-10-01T02:30:00.000Z = 2026-09-30 23:30 BRT: dia local ainda é
+  // 30/09, um dia antes do UTC — a borda que RF-04 exige acertar.
+  const CLOCK_INSTANT = new Date("2026-10-01T02:30:00.000Z");
+  const EXPECTED_TODAY_LOCAL = "2026-09-30";
+
+  const fakeReceivable = (overrides: Partial<Receivable> = {}): Receivable => ({
+    id: RECEIVABLE_ID,
+    saleId: SALE_ID,
+    amountCents: 10_000,
+    dueDate: "2026-09-30",
+    dueKind: "scheduled",
+    paidAt: null,
+    voidedAt: null,
+    status: "pending",
+    overdue: false,
+    createdAt: CLOCK_INSTANT.toISOString(),
+    updatedAt: CLOCK_INSTANT.toISOString(),
+    ...overrides,
+  });
+
+  const fakeSale = (overrides: Partial<Sale> = {}): Sale => ({
+    id: SALE_ID,
+    clientId: null,
+    clientName: "Cliente Fake",
+    totalCents: 10_000,
+    paymentMethod: "cash",
+    paymentCondition: "received",
+    cardType: null,
+    installments: 1,
+    paymentPlanKnown: true,
+    status: "open",
+    deliveryStatus: "pending",
+    paymentStatus: "pending",
+    paidCents: 0,
+    outstandingCents: 10_000,
+    soldAt: CLOCK_INSTANT.toISOString(),
+    deliveredAt: null,
+    completedAt: null,
+    canceledAt: null,
+    createdAt: CLOCK_INSTANT.toISOString(),
+    updatedAt: CLOCK_INSTANT.toISOString(),
+    items: [],
+    receivables: [fakeReceivable()],
+    ...overrides,
+  });
+
+  const fakeReceivableWithSale = (): ReceivableWithSale => ({
+    ...fakeReceivable(),
+    clientId: null,
+    clientName: "Cliente Fake",
+    clientWhatsapp: null,
+  });
+
+  const fakeSummary = (): ReceivablesSummary => ({
+    pendingCents: 0,
+    overdueCents: 0,
+    overdueCount: 0,
+  });
+
+  // Repository fake que só registra o `today` recebido em cada chamada —
+  // devolve fixtures mínimas, sem regra de negócio (a regra sob teste é do
+  // SERVICE: qual `today` ele calcula e repassa).
+  const createRecordingRepository = () => {
+    const received: {
+      createSaleToday?: string;
+      getByIdToday?: string;
+      cancelToday?: string;
+      deliverToday?: string;
+      listReceivablesToday?: string;
+      receivablesSummaryToday?: string;
+      setReceivablePaidToday?: string;
+    } = {};
+
+    const repository: SalesRepositoryPort = {
+      createSale: async (_consultantId, request: SaleCreationRequest) => {
+        received.createSaleToday = request.today;
+        return fakeSale();
+      },
+      list: async () => ({ rows: [], total: 0 }),
+      getById: async (_consultantId, _id, today) => {
+        received.getByIdToday = today;
+        return fakeSale();
+      },
+      cancel: async (_consultantId, _saleId, today) => {
+        received.cancelToday = today;
+        return fakeSale({ status: "canceled" });
+      },
+      remove: async () => undefined,
+      deliver: async (_consultantId, _saleId, today) => {
+        received.deliverToday = today;
+        return fakeSale();
+      },
+      listReceivables: async (_consultantId, params: ListReceivablesParams) => {
+        received.listReceivablesToday = params.today;
+        return { rows: [fakeReceivableWithSale()], total: 1 };
+      },
+      receivablesSummary: async (_consultantId, today) => {
+        received.receivablesSummaryToday = today;
+        return fakeSummary();
+      },
+      setReceivablePaid: async (_consultantId, _receivableId, _paid, today) => {
+        received.setReceivablePaidToday = today;
+        return fakeReceivable();
+      },
+    };
+
+    return { repository, received };
+  };
+
+  it("calcula o dia local a partir do clock injetado e o repassa ao repository em toda leitura que projeta overdue", async () => {
+    const { repository, received } = createRecordingRepository();
+    const service = createSalesService({
+      repository,
+      clock: () => CLOCK_INSTANT,
+    });
+
+    await service.create("consultant-1", {
+      items: [{ productId: "product-1", qty: 1 }],
+      paymentMethod: "cash",
+      deliveryStatus: "pending",
+      paymentCondition: "received",
+      installments: 1,
+    });
+    await service.getById("consultant-1", SALE_ID);
+    await service.cancel("consultant-1", SALE_ID);
+    await service.deliver("consultant-1", SALE_ID);
+    await service.listReceivables("consultant-1", {
+      page: 1,
+      perPage: 20,
+      pending: true,
+      overdue: false,
+    });
+    await service.receivablesSummary("consultant-1");
+    await service.setReceivablePaid("consultant-1", RECEIVABLE_ID, true);
+
+    expect(received).toEqual({
+      createSaleToday: EXPECTED_TODAY_LOCAL,
+      getByIdToday: EXPECTED_TODAY_LOCAL,
+      cancelToday: EXPECTED_TODAY_LOCAL,
+      deliverToday: EXPECTED_TODAY_LOCAL,
+      listReceivablesToday: EXPECTED_TODAY_LOCAL,
+      receivablesSummaryToday: EXPECTED_TODAY_LOCAL,
+      setReceivablePaidToday: EXPECTED_TODAY_LOCAL,
+    });
   });
 });

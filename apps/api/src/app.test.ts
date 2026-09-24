@@ -15,7 +15,8 @@ import {
 } from "./modules/clients/clients.service";
 import {
   createDashboardService,
-  type DashboardRepositoryPort,
+  type DashboardPerformanceRepositoryPort,
+  type DashboardTodayRepositoryPort,
 } from "./modules/dashboard/dashboard.service";
 import {
   createLeadsService,
@@ -143,13 +144,19 @@ const noopOrdersRepository: OrdersRepositoryPort = {
 };
 
 // Dashboard em memória: o único caso deste arquivo é o `/health` (rota
-// pública), que não toca dashboard — o fake só satisfaz o contrato do
-// `createApp`.
-const noopDashboardRepository: DashboardRepositoryPort = {
-  summary: async () => {
+// pública), que não toca dashboard — os fakes só satisfazem o contrato de
+// `createDashboardService` (crm-home-period-and-daily-hub).
+const noopDashboardPerformanceRepository: DashboardPerformanceRepositoryPort = {
+  performance: async () => {
     throw new Error("dashboard não é exercitado neste teste");
   },
-  updateGoal: async () => {
+  upsertGoal: async () => {
+    throw new Error("dashboard não é exercitado neste teste");
+  },
+};
+
+const noopDashboardTodayRepository: DashboardTodayRepositoryPort = {
+  today: async () => {
     throw new Error("dashboard não é exercitado neste teste");
   },
 };
@@ -217,12 +224,14 @@ const buildApp = () =>
     }),
     salesService: createSalesService({
       repository: noopSalesRepository,
+      clock: () => new Date(),
     }),
     ordersService: createOrdersService({
       repository: noopOrdersRepository,
     }),
     dashboardService: createDashboardService({
-      repository: noopDashboardRepository,
+      performanceRepository: noopDashboardPerformanceRepository,
+      todayRepository: noopDashboardTodayRepository,
       clock: () => new Date(),
     }),
     appointmentsService: createAppointmentsService({

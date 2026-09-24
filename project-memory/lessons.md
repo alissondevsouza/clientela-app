@@ -83,6 +83,16 @@ Parecia bastar o clássico `volume:/var/lib/postgresql/data`, e `docker compose 
 
 Ao derivar a constraint CHECK de um array de literais com `sql.join(values.map(v => sql\`${v}\`))`, o `drizzle-kit generate` emite `IN ($1, $2, ...)` no SQL — gerando migração espúria que difere da anterior. Para SQL de DDL determinístico, usar `sql.raw` com os literais escapados (mantendo a fonte única no array TS).
 
+## 2026-09-23 — Postgres não tem `MAX(uuid)`; e array JS no template `sql` do Drizzle vira lista de parâmetros
+- **Sintoma**: `function max(uuid) does not exist` ao agregar grupos por `COALESCE(client_id, sale_id)` e escolher um id representativo; e uma série de meses passada como array ao `sql` gerava `($1, $2, …)` em vez de um array Postgres.
+- **Correção**: `MAX(coluna::text)` (e voltar a uuid na leitura) quando o agregado é só um representante; para tabelas derivadas de parâmetros, montar `(VALUES (…), …) AS t(…)` com `sql.join` e cast explícito (`::timestamptz`) em cada valor.
+- **Onde**: `apps/api/src/modules/dashboard/dashboard-*.repository.ts` (`specs/crm-home-period-and-daily-hub`).
+
+## 2026-09-23 — `LIMIT` sobre uma ordem diferente da pedida esconde itens em silêncio
+- **Sintoma**: aniversariantes ordenados por nome no SQL e reordenados por data no service; com mais de 20 na janela, os de **hoje** sumiam (o corte acontecia antes da ordem certa). Testes com poucos itens nunca pegam isso.
+- **Regra**: a ordenação que decide *quais* itens entram tem de estar no SQL, antes do `LIMIT`; reordenar depois só é seguro sem limite. Todo limite de lista precisa de um teste com mais itens que o limite.
+- **Onde**: QA rodada 1 de `specs/crm-home-period-and-daily-hub` (`dashboard-today.repository.ts`).
+
 ## 2026-09-19 — Um CHECK do Postgres não pode barrar data futura
 
 Constraint não chama `now()`: qualquer invariante que dependa do "agora" precisa viver no service. No CRM-13 a spec chegou a prometer "data futura rejeitada como invariante no banco" — falso, porque uma linha com `sold_at` e `updated_at` **ambos** no futuro satisfaz `sold_at <= updated_at`. O que o CHECK entrega é coerência entre colunas, não relação com o presente. Detectar: qualquer requisito de "não pode ser no futuro/passado" atribuído ao banco.

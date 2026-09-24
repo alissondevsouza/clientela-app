@@ -2,6 +2,7 @@
 
 - **Status**: Aceito
 - **Data**: 2026-08-05
+- **Emendado por**: [ADR-0026](./0026-sold-revenue-and-daily-hub-home.md) — a "divergência assumida" com o dashboard deixou de existir: painel e "atrasado" de cobranças passaram a recortar em `APP_TIME_ZONE`. Exceção registrada: o literal do fuso aparece nas migrações SQL `0012` e `0016` (migração não importa TypeScript)
 
 ## Contexto
 

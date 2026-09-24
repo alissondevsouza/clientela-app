@@ -10,8 +10,13 @@ import {
   PAYMENT_STATUS_LABELS,
   RECEIVABLE_STATUS_LABELS,
   receivableSchema,
+  receivablesListQuerySchema,
   SALE_STATUS_LABELS,
+  SALES_LIST_STATUS_FILTER_LABELS,
   saleSchema,
+  saleStatusValues,
+  salesListQuerySchema,
+  salesListStatusFilterValues,
   splitInstallmentAmounts,
   TOTAL_CENTS_INSTALLMENTS_MESSAGE,
   validateSaleTotalCents,
@@ -425,6 +430,286 @@ describe("contratos de resposta", () => {
         dueDate: "2026-10-10",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("salesListQuerySchema — filtros novos (RF-14)", () => {
+  const issueForSalesQuery = (input: unknown, field: string): string => {
+    const result = salesListQuerySchema.safeParse(input);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    return (
+      result.error.issues.find((issue) => issue.path[0] === field)?.message ??
+      ""
+    );
+  };
+
+  it("sem parâmetros novos, resolve igual ao contrato atual (page/perPage default, sem filtros)", () => {
+    const result = salesListQuerySchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        page: 1,
+        perPage: 20,
+        status: undefined,
+        clientId: undefined,
+        soldFrom: undefined,
+        soldTo: undefined,
+        delivery: undefined,
+      });
+    }
+  });
+
+  it("expõe salesListStatusFilterValues como saleStatusValues + sold, com rótulo pt-BR", () => {
+    expect(salesListStatusFilterValues).toEqual([...saleStatusValues, "sold"]);
+    expect(SALES_LIST_STATUS_FILTER_LABELS).toEqual({
+      open: "Em aberto",
+      completed: "Concluída",
+      canceled: "Cancelada",
+      sold: "Vendidas",
+    });
+  });
+
+  it("aceita cada status do filtro, inclusive o escopo Vendido (status=sold)", () => {
+    for (const status of salesListStatusFilterValues) {
+      expect(salesListQuerySchema.safeParse({ status }).success).toBe(true);
+    }
+  });
+
+  it("rejeita status fora do enum com a mensagem pt-BR", () => {
+    expect(issueForSalesQuery({ status: "refunded" }, "status")).toBe(
+      "Status de venda inválido",
+    );
+  });
+
+  it("aceita soldFrom e soldTo isoladamente (independentes entre si)", () => {
+    expect(
+      salesListQuerySchema.safeParse({ soldFrom: "2026-09-01" }).success,
+    ).toBe(true);
+    expect(
+      salesListQuerySchema.safeParse({ soldTo: "2026-09-30" }).success,
+    ).toBe(true);
+  });
+
+  it("aceita soldFrom igual a soldTo (borda do mesmo dia)", () => {
+    expect(
+      salesListQuerySchema.safeParse({
+        soldFrom: "2026-09-15",
+        soldTo: "2026-09-15",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejeita soldFrom posterior a soldTo com mensagem pt-BR no campo soldTo", () => {
+    expect(
+      issueForSalesQuery(
+        { soldFrom: "2026-09-20", soldTo: "2026-09-10" },
+        "soldTo",
+      ),
+    ).toBe("A data inicial da venda não pode ser depois da data final");
+  });
+
+  it("rejeita soldFrom/soldTo com formato inválido", () => {
+    expect(
+      salesListQuerySchema.safeParse({ soldFrom: "15/09/2026" }).success,
+    ).toBe(false);
+    expect(
+      salesListQuerySchema.safeParse({ soldTo: "2026-13-01" }).success,
+    ).toBe(false);
+  });
+
+  // A3 (rodada 2): "9999-12-31" passa no formato `z.iso.date()`, mas fazia o
+  // service quebrar em 500 ao calcular o dia SEGUINTE ("10000-01-01", que o
+  // parser de `time.ts` rejeita) — piso/teto barram isso ainda no Zod, com
+  // 422 e mensagem pt-BR, nunca 500.
+  it("rejeita soldFrom/soldTo muito no futuro (ex.: 9999-12-31) com mensagem pt-BR", () => {
+    expect(issueForSalesQuery({ soldFrom: "9999-12-31" }, "soldFrom")).toBe(
+      "A data inicial da venda deve estar entre 01/01/2015 e 31/12/2099",
+    );
+    expect(issueForSalesQuery({ soldTo: "9999-12-31" }, "soldTo")).toBe(
+      "A data final da venda deve estar entre 01/01/2015 e 31/12/2099",
+    );
+  });
+
+  it("rejeita soldFrom/soldTo anterior a 2015-01-01 (ano digitado errado)", () => {
+    expect(issueForSalesQuery({ soldFrom: "0099-01-01" }, "soldFrom")).toBe(
+      "A data inicial da venda deve estar entre 01/01/2015 e 31/12/2099",
+    );
+  });
+
+  it("aceita soldFrom/soldTo exatamente nos limites (2015-01-01 e 2099-12-31)", () => {
+    expect(
+      salesListQuerySchema.safeParse({
+        soldFrom: "2015-01-01",
+        soldTo: "2099-12-31",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("aceita delivery pending/delivered e rejeita valor fora do enum", () => {
+    expect(
+      salesListQuerySchema.safeParse({ delivery: "pending" }).success,
+    ).toBe(true);
+    expect(
+      salesListQuerySchema.safeParse({ delivery: "delivered" }).success,
+    ).toBe(true);
+    expect(issueForSalesQuery({ delivery: "shipped" }, "delivery")).toBe(
+      "Situação de entrega inválida",
+    );
+  });
+
+  it("combina status=sold, soldFrom/soldTo e delivery sem conflito", () => {
+    expect(
+      salesListQuerySchema.safeParse({
+        status: "sold",
+        soldFrom: "2026-09-01",
+        soldTo: "2026-09-30",
+        delivery: "pending",
+      }).success,
+    ).toBe(true);
+  });
+});
+
+describe("receivablesListQuerySchema — filtros novos (RF-15)", () => {
+  const issueForReceivablesQuery = (input: unknown, field: string): string => {
+    const result = receivablesListQuerySchema.safeParse(input);
+    if (result.success) {
+      throw new Error("esperava falha de validação");
+    }
+    return (
+      result.error.issues.find((issue) => issue.path[0] === field)?.message ??
+      ""
+    );
+  };
+
+  it("sem parâmetros novos, resolve igual ao contrato atual (pending=true, sem os demais)", () => {
+    const result = receivablesListQuerySchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        page: 1,
+        perPage: 20,
+        pending: true,
+        overdue: false,
+        paidFrom: undefined,
+        paidTo: undefined,
+      });
+    }
+  });
+
+  it("aceita overdue=true junto com pending=true (padrão)", () => {
+    const result = receivablesListQuerySchema.safeParse({ overdue: "true" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.overdue).toBe(true);
+      expect(result.data.pending).toBe(true);
+    }
+  });
+
+  it("rejeita overdue=true com pending=false, mensagem pt-BR no campo overdue", () => {
+    expect(
+      issueForReceivablesQuery(
+        { overdue: "true", pending: "false" },
+        "overdue",
+      ),
+    ).toBe(
+      "O filtro de atrasadas só pode ser usado junto com as cobranças pendentes",
+    );
+  });
+
+  it("rejeita valor de overdue fora de true/false com mensagem pt-BR", () => {
+    expect(issueForReceivablesQuery({ overdue: "amanha" }, "overdue")).toBe(
+      "Informe se deseja somente as cobranças atrasadas (true ou false)",
+    );
+  });
+
+  it("aceita paidFrom e paidTo isoladamente, só com pending=false", () => {
+    expect(
+      receivablesListQuerySchema.safeParse({
+        pending: "false",
+        paidFrom: "2026-09-01",
+      }).success,
+    ).toBe(true);
+    expect(
+      receivablesListQuerySchema.safeParse({
+        pending: "false",
+        paidTo: "2026-09-30",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("aceita paidFrom igual a paidTo (borda do mesmo dia)", () => {
+    expect(
+      receivablesListQuerySchema.safeParse({
+        pending: "false",
+        paidFrom: "2026-09-15",
+        paidTo: "2026-09-15",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejeita paidFrom/paidTo com pending=true (explícito ou pelo default), mensagem pt-BR", () => {
+    expect(
+      issueForReceivablesQuery(
+        { pending: "true", paidFrom: "2026-09-01" },
+        "paidFrom",
+      ),
+    ).toBe(
+      "O filtro de período recebido só pode ser usado com as cobranças já pagas (pending=false)",
+    );
+    expect(issueForReceivablesQuery({ paidTo: "2026-09-30" }, "paidFrom")).toBe(
+      "O filtro de período recebido só pode ser usado com as cobranças já pagas (pending=false)",
+    );
+  });
+
+  it("rejeita paidFrom posterior a paidTo com mensagem pt-BR no campo paidTo", () => {
+    expect(
+      issueForReceivablesQuery(
+        { pending: "false", paidFrom: "2026-09-20", paidTo: "2026-09-10" },
+        "paidTo",
+      ),
+    ).toBe("A data inicial do recebimento não pode ser depois da data final");
+  });
+
+  it("rejeita paidFrom/paidTo com formato inválido", () => {
+    expect(
+      receivablesListQuerySchema.safeParse({
+        pending: "false",
+        paidFrom: "01/09/2026",
+      }).success,
+    ).toBe(false);
+  });
+
+  // A3 (rodada 2): mesma proteção de soldFrom/soldTo — nunca 500 por causa de
+  // uma data-limite aceita pelo formato.
+  it("rejeita paidFrom/paidTo muito no futuro (ex.: 9999-12-31) com mensagem pt-BR", () => {
+    expect(
+      issueForReceivablesQuery(
+        { pending: "false", paidFrom: "9999-12-31" },
+        "paidFrom",
+      ),
+    ).toBe(
+      "A data inicial do recebimento deve estar entre 01/01/2015 e 31/12/2099",
+    );
+    expect(
+      issueForReceivablesQuery(
+        { pending: "false", paidTo: "9999-12-31" },
+        "paidTo",
+      ),
+    ).toBe(
+      "A data final do recebimento deve estar entre 01/01/2015 e 31/12/2099",
+    );
+  });
+
+  it("aceita paidFrom/paidTo exatamente nos limites (2015-01-01 e 2099-12-31)", () => {
+    expect(
+      receivablesListQuerySchema.safeParse({
+        pending: "false",
+        paidFrom: "2015-01-01",
+        paidTo: "2099-12-31",
+      }).success,
+    ).toBe(true);
   });
 });
 

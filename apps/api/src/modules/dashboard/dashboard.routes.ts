@@ -1,4 +1,7 @@
-import { updateGoalSchema } from "@clientela/shared";
+import {
+  dashboardPeriodQuerySchema,
+  updateGoalSchema,
+} from "@clientela/shared";
 import { Elysia } from "elysia";
 import { createConsultantResolver } from "../../lib/route-auth";
 import type { AuthService } from "../auth/auth.service";
@@ -17,6 +20,10 @@ export type DashboardRoutesDeps = {
 // `consultantId` sai do token validado (padrão do `/auth/me`), nunca do body.
 // O guard global já barra anônimos (default-deny — security.md); a rota
 // revalida o token para obter a identidade.
+//
+// `GET /dashboard/summary` saiu (RF-13, crm-home-period-and-daily-hub): as
+// três rotas abaixo (`performance`/`today`/`goal`) são o painel novo — a home
+// absorveu o resumo antigo em Desempenho + Posição.
 export const createDashboardRoutes = ({
   service,
   authService,
@@ -24,11 +31,21 @@ export const createDashboardRoutes = ({
   const resolveConsultantId = createConsultantResolver(authService);
 
   return new Elysia()
-    .get("/dashboard/summary", async ({ request }) => {
+    .get(
+      "/dashboard/performance",
+      async ({ request, query }) => {
+        const consultantId = await resolveConsultantId(
+          request.headers.get(AUTHORIZATION_HEADER),
+        );
+        return service.getPerformance(consultantId, query);
+      },
+      { query: dashboardPeriodQuerySchema },
+    )
+    .get("/dashboard/today", async ({ request }) => {
       const consultantId = await resolveConsultantId(
         request.headers.get(AUTHORIZATION_HEADER),
       );
-      return service.getSummary(consultantId);
+      return service.getToday(consultantId);
     })
     .put(
       "/dashboard/goal",
@@ -36,8 +53,7 @@ export const createDashboardRoutes = ({
         const consultantId = await resolveConsultantId(
           request.headers.get(AUTHORIZATION_HEADER),
         );
-        const monthlyGoalCents = await service.updateGoal(consultantId, body);
-        return { monthlyGoalCents };
+        return service.updateMonthlyGoal(consultantId, body.monthlyGoalCents);
       },
       { body: updateGoalSchema },
     );

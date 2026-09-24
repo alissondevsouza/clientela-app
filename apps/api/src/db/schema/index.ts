@@ -11,6 +11,11 @@ export {
 } from "./consultants";
 export { type Lead, leads, type NewLead } from "./leads";
 export {
+  type MonthlyGoal,
+  monthlyGoals,
+  type NewMonthlyGoal,
+} from "./monthly-goals";
+export {
   type NewOrderItem,
   type OrderItem,
   orderItems,

@@ -19,9 +19,15 @@ import {
   addMonthsClamped,
   appLocalDateIso,
   appLocalDateTimeToUtc,
+  appLocalDayRangeUtc,
   splitInstallmentAmounts,
   validateSaleTotalCents,
 } from "@clientela/shared";
+// Relógio injetado (ADR-0018/padrão do projeto — ver `leads.service.ts`,
+// `dashboard.service.ts`): o service nunca lê `Date.now()` direto. "Hoje"
+// (dia local) deriva do clock e é passado ao repository em toda leitura que
+// projeta `overdue` de cobrança (RF-04, crm-home-period-and-daily-hub) — o
+// SQL nunca decide atraso sozinho com a data/hora corrente do servidor.
 import {
   InvalidSaleCreditError,
   InvalidSaleDateError,
@@ -362,13 +368,16 @@ export const composeSaleCreation = (
 // QUAIS produtos precisam ser travados e entrega a função que compõe a venda a
 // partir das linhas já travadas e do instante canônico da transação (RF-04).
 // Assim a regra de negócio continua no service e o lock/atomicidade no
-// repository, sem janela entre ler o produto e inserir o item.
+// repository, sem janela entre ler o produto e inserir o item. `today` é o dia
+// local (relógio injetado) usado pelo repository para projetar `overdue` das
+// cobranças da venda recém-criada (RF-04 de crm-home-period-and-daily-hub).
 export type SaleCreationRequest = {
   productIds: string[];
   compose: (
     lockedProducts: readonly SaleProductSnapshot[],
     transactionNow: Date,
   ) => ComposedSale;
+  today: string;
 };
 
 // Recebível enriquecido com dados da venda/cliente para a lista "quem me deve"
@@ -381,23 +390,45 @@ export type ReceivableWithSale = Receivable & {
   clientWhatsapp: string | null;
 };
 
+// `status` chega ao repository já como o(s) status REAL(is) do banco — nunca
+// o valor de filtro "sold" (RF-14, crm-home-period-and-daily-hub): o service
+// traduz o escopo Vendido (open ∪ completed) em `["open", "completed"]` antes
+// de repassar. Array (não union) porque "sold" é dois status ao mesmo tempo.
+// `soldAtFromUtc`/`soldAtToUtc` são instantes UTC prontos (dias locais
+// convertidos pelo service via `appLocalDayRangeUtc`) — o repository só
+// compara `sold_at` contra eles, nunca decide fuso sozinho (RF-04).
 export type ListSalesParams = {
   page: number;
   perPage: number;
-  status?: SaleStatus;
+  status?: SaleStatus[];
   clientId?: string;
+  soldAtFromUtc?: string;
+  soldAtToUtc?: string;
+  delivery?: DeliveryStatus;
 };
 
+// `overdue` filtra só as pendentes atrasadas (RF-15, só válido com
+// `pending=true`, garantido pelo schema); `paidAtFromUtc`/`paidAtToUtc` são
+// instantes UTC prontos (dias locais convertidos pelo service) que filtram só
+// as pagas nesse intervalo (só válido com `pending=false`, garantido pelo
+// schema) — o repository nunca decide fuso sozinho (RF-04).
 export type ListReceivablesParams = {
   page: number;
   perPage: number;
   pending: boolean;
+  overdue: boolean;
+  paidAtFromUtc?: string;
+  paidAtToUtc?: string;
+  today: string;
 };
 
 // Porta do repositório de vendas/recebíveis. TODA operação recebe `consultantId`
 // para escopar por consultora. As guardas de corrida (baixa de estoque, cancel,
 // setReceivablePaid) vivem DENTRO das transações do repository; o service compõe
-// os dados e traduz os retornos ausentes em erros de domínio.
+// os dados e traduz os retornos ausentes em erros de domínio. `today` (dia local,
+// `yyyy-mm-dd`) chega já resolvido pelo relógio injetado do service em toda
+// operação cujo resultado projeta `overdue` de cobrança — o repository nunca
+// decide atraso sozinho (RF-04, ADR-0018).
 export type SalesRepositoryPort = {
   createSale: (
     consultantId: string,
@@ -407,42 +438,96 @@ export type SalesRepositoryPort = {
     consultantId: string,
     params: ListSalesParams,
   ) => Promise<{ rows: SaleListItem[]; total: number }>;
-  getById: (consultantId: string, id: string) => Promise<Sale | undefined>;
-  cancel: (consultantId: string, saleId: string) => Promise<Sale>;
+  getById: (
+    consultantId: string,
+    id: string,
+    today: string,
+  ) => Promise<Sale | undefined>;
+  cancel: (
+    consultantId: string,
+    saleId: string,
+    today: string,
+  ) => Promise<Sale>;
   remove: (consultantId: string, saleId: string) => Promise<void>;
-  deliver?: (consultantId: string, saleId: string) => Promise<Sale>;
+  deliver?: (
+    consultantId: string,
+    saleId: string,
+    today: string,
+  ) => Promise<Sale>;
   listReceivables: (
     consultantId: string,
     params: ListReceivablesParams,
   ) => Promise<{ rows: ReceivableWithSale[]; total: number }>;
-  receivablesSummary: (consultantId: string) => Promise<ReceivablesSummary>;
+  receivablesSummary: (
+    consultantId: string,
+    today: string,
+  ) => Promise<ReceivablesSummary>;
   setReceivablePaid: (
     consultantId: string,
     receivableId: string,
     paid: boolean,
+    today: string,
   ) => Promise<Receivable>;
 };
 
+// Relógio injetado (ADR-0018/padrão do projeto): o service nunca lê
+// `Date.now()` direto — testável com relógio fixo (testing.md).
+export type SalesClock = () => Date;
+
 export type SalesServiceDeps = {
   repository: SalesRepositoryPort;
+  clock: SalesClock;
 };
 
 export type SalesService = ReturnType<typeof createSalesService>;
 
-export const createSalesService = ({ repository }: SalesServiceDeps) => {
+// Escopo "Vendido" (RF-14): exatamente o mesmo conjunto de status do painel
+// (open ∪ completed) — canceladas nunca entram, mesmo que "sold" pareça um
+// terceiro status ao consumir a API.
+const SOLD_SCOPE_STATUSES: SaleStatus[] = [
+  OPEN_SALE_STATUS,
+  COMPLETED_SALE_STATUS,
+];
+
+// Traduz o filtro de listagem (que inclui o valor sintético "sold") no(s)
+// status real(is) do banco. Ausente ⇒ ausente (sem filtro de status).
+const resolveSalesListStatuses = (
+  status: SalesListQuery["status"],
+): SaleStatus[] | undefined => {
+  if (status === undefined) {
+    return undefined;
+  }
+  return status === "sold" ? SOLD_SCOPE_STATUSES : [status];
+};
+
+export const createSalesService = ({ repository, clock }: SalesServiceDeps) => {
+  // Dia local (RF-04): calculado a cada chamada a partir do relógio injetado —
+  // nunca cacheado no closure do service (uma instância de longa vida cruzaria
+  // a virada do dia com um valor congelado).
+  const resolveToday = (): string => appLocalDateIso(clock().toISOString());
+
   // Composição da venda (regra de negócio pura, sem HTTP): valida os itens
   // contra o catálogo da consultora, resolve snapshot/preço, calcula o total NO
   // SERVIDOR (o cliente nunca dita o valor — inv. 3) e, para `credit`, gera os
   // recebíveis (Σ exata via splitInstallmentAmounts, vencimentos mensais via
   // addMonthsClamped). A persistência atômica (baixa de estoque, inserts,
-  // snapshot de clientName) é do repository.
+  // snapshot de clientName) é do repository. `today` vai junto para o
+  // repository projetar `overdue` das cobranças da venda recém-criada.
   const create = (consultantId: string, input: CreateSale): Promise<Sale> =>
     repository.createSale(consultantId, {
       productIds: [...new Set(input.items.map((item) => item.productId))],
       compose: (lockedProducts, transactionNow) =>
         composeSaleCreation(input, lockedProducts, transactionNow),
+      today: resolveToday(),
     });
 
+  // Listagem (RF-14): `soldFrom`/`soldTo` são dias locais INDEPENDENTES entre
+  // si — cada um vira um instante UTC isolado via `appLocalDayRangeUtc`
+  // (`soldFrom` ⇒ início do dia local; `soldTo` ⇒ início do dia local
+  // SEGUINTE, exclusivo) para o repository comparar `sold_at` sem
+  // `AT TIME ZONE`/`date_trunc` (RF-04). `status=sold` mapeia para o escopo
+  // Vendido (open ∪ completed) — a mesma lista cujo total prova a invariante
+  // com `/dashboard/performance`.
   const list = async (
     consultantId: string,
     query: SalesListQuery,
@@ -450,8 +535,17 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
     const { rows, total } = await repository.list(consultantId, {
       page: query.page,
       perPage: query.perPage,
-      status: query.status,
+      status: resolveSalesListStatuses(query.status),
       clientId: query.clientId,
+      soldAtFromUtc:
+        query.soldFrom !== undefined
+          ? appLocalDayRangeUtc(query.soldFrom).startUtc
+          : undefined,
+      soldAtToUtc:
+        query.soldTo !== undefined
+          ? appLocalDayRangeUtc(query.soldTo).endUtc
+          : undefined,
+      delivery: query.delivery,
     });
 
     return {
@@ -463,7 +557,7 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
   };
 
   const getById = async (consultantId: string, id: string): Promise<Sale> => {
-    const sale = await repository.getById(consultantId, id);
+    const sale = await repository.getById(consultantId, id, resolveToday());
     if (!sale) {
       throw new SaleNotFoundError();
     }
@@ -472,13 +566,15 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
 
   // Cancelamento (RF-05): a guarda de estado (só `completed`, sem parcela paga)
   // e a serialização contra o pagamento vivem na transação do repository, que
-  // lança SaleNotFoundError/SaleStateError. O service apenas repassa o escopo.
+  // lança SaleNotFoundError/SaleStateError. O service apenas repassa o escopo
+  // e o dia local (a venda cancelada devolvida ainda projeta `overdue`).
   const cancel = (consultantId: string, saleId: string): Promise<Sale> =>
-    repository.cancel(consultantId, saleId);
+    repository.cancel(consultantId, saleId, resolveToday());
 
   // Exclusão (RF-08 a RF-13): a decisão de estoque (três casos, um só devolve)
   // é invariante TRANSACIONAL e vive no repository — o mesmo padrão do cancel.
-  // O service não adiciona regra nenhuma, só repassa o escopo.
+  // O service não adiciona regra nenhuma, só repassa o escopo. Não devolve
+  // venda (void) — sem `overdue` a projetar, sem `today` a passar.
   const remove = (consultantId: string, saleId: string): Promise<void> =>
     repository.remove(consultantId, saleId);
 
@@ -486,9 +582,14 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
     if (!repository.deliver) {
       throw new SaleNotFoundError();
     }
-    return repository.deliver(consultantId, saleId);
+    return repository.deliver(consultantId, saleId, resolveToday());
   };
 
+  // Listagem de cobranças (RF-15): `paidFrom`/`paidTo` são dias locais
+  // INDEPENDENTES entre si — mesma conversão de `list` (RF-04), aplicada a
+  // `paid_at`. `overdue` só chega `true` com `pending=true` (garantido pelo
+  // schema) e é repassado como está; o repository decide o WHERE com
+  // `receivableOverdueCondition(today)`.
   const listReceivables = async (
     consultantId: string,
     query: ReceivablesListQuery,
@@ -497,6 +598,16 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
       page: query.page,
       perPage: query.perPage,
       pending: query.pending,
+      overdue: query.overdue,
+      paidAtFromUtc:
+        query.paidFrom !== undefined
+          ? appLocalDayRangeUtc(query.paidFrom).startUtc
+          : undefined,
+      paidAtToUtc:
+        query.paidTo !== undefined
+          ? appLocalDayRangeUtc(query.paidTo).endUtc
+          : undefined,
+      today: resolveToday(),
     });
 
     return {
@@ -509,17 +620,26 @@ export const createSalesService = ({ repository }: SalesServiceDeps) => {
 
   const receivablesSummary = (
     consultantId: string,
-  ): Promise<ReceivablesSummary> => repository.receivablesSummary(consultantId);
+  ): Promise<ReceivablesSummary> =>
+    repository.receivablesSummary(consultantId, resolveToday());
 
   // Baixa/estorno de parcela (RF-06): a serialização contra o cancelamento
   // (SELECT ... FOR UPDATE na venda) e as guardas de estado vivem na transação
-  // do repository (ReceivableNotFoundError/SaleStateError). O service repassa.
+  // do repository (ReceivableNotFoundError/SaleStateError). O service repassa
+  // o escopo e o dia local (a parcela devolvida projeta `overdue`; e OUTRAS
+  // parcelas pendentes da mesma venda também dependem do mesmo "hoje" quando
+  // relidas em seguida — RF-04).
   const setReceivablePaid = (
     consultantId: string,
     receivableId: string,
     paid: boolean,
   ): Promise<Receivable> =>
-    repository.setReceivablePaid(consultantId, receivableId, paid);
+    repository.setReceivablePaid(
+      consultantId,
+      receivableId,
+      paid,
+      resolveToday(),
+    );
 
   return {
     create,

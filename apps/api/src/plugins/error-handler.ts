@@ -11,6 +11,7 @@ import {
   UnauthorizedError,
 } from "../modules/auth/auth.errors";
 import { ClientNotFoundError } from "../modules/clients/clients.errors";
+import { InvalidDashboardPeriodError } from "../modules/dashboard/dashboard.errors";
 import {
   LeadAlreadyConvertedError,
   LeadNotFoundError,
@@ -269,6 +270,17 @@ export const errorHandler = new Elysia({ name: "error-handler" }).onError(
     if (error instanceof InvalidAppointmentSaleError) {
       set.status = HTTP_UNPROCESSABLE_ENTITY;
       return buildError(ERROR_CODE.invalidAppointmentSale, error.message);
+    }
+
+    // Erro de domínio do módulo dashboard (core.md/api.md): período futuro
+    // (RF-02, crm-home-period-and-daily-hub) depende do relógio injetado no
+    // service, não do schema Zod — lançado como `InvalidDashboardPeriodError`
+    // e mapeado aqui para o MESMO código `VALIDATION_ERROR` da validação de
+    // schema (para o cliente é o mesmo tipo de erro). Mensagem pt-BR já vem
+    // pronta de `resolveDashboardPeriod` (packages/shared).
+    if (error instanceof InvalidDashboardPeriodError) {
+      set.status = HTTP_UNPROCESSABLE_ENTITY;
+      return buildError(ERROR_CODE.validation, error.message);
     }
 
     set.status = HTTP_INTERNAL_ERROR;

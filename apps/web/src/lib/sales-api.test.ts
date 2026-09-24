@@ -319,6 +319,39 @@ describe("listSales", () => {
     expect(calls[0]?.url).toBe("http://localhost:3001/sales");
   });
 
+  it("monta a query com perPage, status=sold (escopo Vendido, RF-14), soldFrom/soldTo e delivery", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 50, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listSales(
+      {
+        perPage: 50,
+        status: "sold",
+        soldFrom: "2026-08-01",
+        soldTo: "2026-08-31",
+        delivery: "pending",
+      },
+      depsWith(fetchImpl),
+    );
+
+    expect(calls[0]?.url).toBe(
+      "http://localhost:3001/sales?perPage=50&status=sold&soldFrom=2026-08-01&soldTo=2026-08-31&delivery=pending",
+    );
+  });
+
+  it("omite clientId vazio mesmo com os demais filtros definidos", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listSales({ clientId: "" }, depsWith(fetchImpl));
+
+    expect(calls[0]?.url).toBe("http://localhost:3001/sales");
+  });
+
   it("mapeia erro da API para mensagem pt-BR do envelope", async () => {
     const { fetchImpl } = stubFetch(
       () =>
@@ -601,6 +634,49 @@ describe("listReceivables", () => {
     await listReceivables({}, depsWith(fetchImpl));
 
     expect(calls[0]?.url).toBe("http://localhost:3001/receivables");
+  });
+
+  it("monta a query com perPage e overdue=true (RF-15)", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 50, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listReceivables(
+      { perPage: 50, pending: true, overdue: true },
+      depsWith(fetchImpl),
+    );
+
+    expect(calls[0]?.url).toBe(
+      "http://localhost:3001/receivables?perPage=50&pending=true&overdue=true",
+    );
+  });
+
+  it("omite overdue quando false (default da API, RF-15)", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listReceivables({ overdue: false }, depsWith(fetchImpl));
+
+    expect(calls[0]?.url).toBe("http://localhost:3001/receivables");
+  });
+
+  it("monta a query com paidFrom/paidTo (RF-15, recebidas no período)", async () => {
+    const body = JSON.stringify({ data: [], page: 1, perPage: 20, total: 0 });
+    const { fetchImpl, calls } = stubFetch(
+      () => new Response(body, { status: 200 }),
+    );
+
+    await listReceivables(
+      { pending: false, paidFrom: "2026-08-01", paidTo: "2026-08-31" },
+      depsWith(fetchImpl),
+    );
+
+    expect(calls[0]?.url).toBe(
+      "http://localhost:3001/receivables?pending=false&paidFrom=2026-08-01&paidTo=2026-08-31",
+    );
   });
 
   it("retorna ok:false quando o 200 tem corpo malformado", async () => {
