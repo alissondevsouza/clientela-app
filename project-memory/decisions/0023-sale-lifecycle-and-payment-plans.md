@@ -2,6 +2,7 @@
 
 - **Status**: Aceito
 - **Data**: 2026-09-10
+- **Emendado por**: [ADR-0025](./0025-business-dates-and-sold-at-revenue.md) ("Tempo canônico do banco", "Faturamento por conclusão") e [ADR-0026](./0026-sold-revenue-and-daily-hub-home.md) ("Faturamento por conclusão" substituído por "Vendido" — vendas não canceladas por `sold_at` —, com lucro estimado sobre o mesmo escopo)
 
 ## Contexto
 

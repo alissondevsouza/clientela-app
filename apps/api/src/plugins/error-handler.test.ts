@@ -1,9 +1,11 @@
 import { Elysia } from "elysia";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { InvalidDashboardPeriodError } from "../modules/dashboard/dashboard.errors";
 import { errorHandler } from "./error-handler";
 
 const SECRET_INTERNAL_DETAIL = "detalhe interno com segredo do servidor";
+const PERIOD_ERROR_MESSAGE = "O mês não pode ser posterior ao mês corrente";
 
 const buildTestApp = () =>
   new Elysia()
@@ -15,6 +17,9 @@ const buildTestApp = () =>
     })
     .get("/boom", () => {
       throw new Error(SECRET_INTERNAL_DETAIL);
+    })
+    .get("/boom-period", () => {
+      throw new InvalidDashboardPeriodError(PERIOD_ERROR_MESSAGE);
     });
 
 const postJson = (
@@ -90,6 +95,19 @@ describe("errorHandler", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "NOT_FOUND", message: "Recurso não encontrado." },
+    });
+  });
+
+  it("mapeia InvalidDashboardPeriodError para 422 VALIDATION_ERROR com a mensagem pt-BR de origem (RF-02, nunca 500 cru)", async () => {
+    const app = buildTestApp();
+
+    const response = await app.handle(
+      new Request("http://localhost/boom-period"),
+    );
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: { code: "VALIDATION_ERROR", message: PERIOD_ERROR_MESSAGE },
     });
   });
 });

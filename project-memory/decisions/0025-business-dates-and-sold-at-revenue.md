@@ -3,6 +3,7 @@
 - **Status**: Aceito
 - **Data**: 2026-09-19
 - **Emenda**: parágrafos "Tempo canônico do banco" e "Faturamento por conclusão" do [ADR-0023](./0023-sale-lifecycle-and-payment-plans.md); invariante 10 de `04-domain-model.md`
+- **Emendado por**: [ADR-0026](./0026-sold-revenue-and-daily-hub-home.md) (item 6 — o filtro `status = 'completed'` sai; o faturamento passa a ser o Vendido, e o leitor de período citado nas consequências foi entregue no CRM-14)
 
 ## Contexto
 

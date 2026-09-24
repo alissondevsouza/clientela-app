@@ -16,6 +16,10 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Database } from "../../db/client";
+import {
+  availableQtyExpression,
+  reservedQtyExpression,
+} from "../../db/derived-expressions";
 import { products, saleItems, sales } from "../../db/schema";
 import { ProductReservedError } from "./products.errors";
 import type {
@@ -28,20 +32,6 @@ import type {
 export type ProductsRepository = ReturnType<typeof createProductsRepository>;
 
 type ProductRow = typeof products.$inferSelect;
-
-// Reserva é derivada, nunca persistida: considera só itens ainda vinculados a
-// vendas abertas e não entregues da mesma consultora.
-const reservedQtyExpression = sql<string>`COALESCE((
-  SELECT SUM("sale_items"."qty"::bigint)
-  FROM "sale_items"
-  INNER JOIN "sales" ON "sales"."id" = "sale_items"."sale_id"
-  WHERE "sale_items"."product_id" = "products"."id"
-    AND "sales"."consultant_id" = "products"."consultant_id"
-    AND "sales"."status" = 'open'
-    AND "sales"."delivered_at" IS NULL
-), 0)`;
-
-const availableQtyExpression = sql<number>`${products.stockQty} - ${reservedQtyExpression}`;
 
 const productProjection = {
   id: products.id,

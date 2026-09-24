@@ -2,6 +2,7 @@ import {
   apiErrorSchema,
   type CreateSaleInput,
   createSaleSchema,
+  type DeliveryStatus,
   paginated,
   type Receivable,
   type ReceivableListItem,
@@ -11,7 +12,7 @@ import {
   receivablesSummarySchema,
   type Sale,
   type SaleListItem,
-  type SaleStatus,
+  type SalesListStatusFilter,
   saleListItemSchema,
   saleSchema,
 } from "@clientela/shared";
@@ -52,15 +53,29 @@ export type SalesApiDeps = {
   token: string;
 };
 
+// `status` aceita o escopo Vendido (RF-14, `SalesListStatusFilter` = status
+// reais + "sold") além dos status reais; `soldFrom`/`soldTo` são dias locais
+// (`yyyy-mm-dd`) INDEPENDENTES entre si; `delivery` filtra por situação de
+// entrega. Cada campo só entra na URL quando definido.
 export type ListSalesParams = {
   page?: number;
-  status?: SaleStatus;
+  perPage?: number;
+  status?: SalesListStatusFilter;
   clientId?: string;
+  soldFrom?: string;
+  soldTo?: string;
+  delivery?: DeliveryStatus;
 };
 
+// `overdue` (RF-15) só é enviado quando `true` (default da API é `false`);
+// `paidFrom`/`paidTo` são dias locais INDEPENDENTES entre si.
 export type ListReceivablesParams = {
   page?: number;
+  perPage?: number;
   pending?: boolean;
+  overdue?: boolean;
+  paidFrom?: string;
+  paidTo?: string;
 };
 
 // Resultados discriminados (core.md): a página/action faz narrowing sem
@@ -157,11 +172,23 @@ const buildSalesListUrl = (apiUrl: string, params: ListSalesParams): string => {
   if (params.page !== undefined) {
     query.set("page", String(params.page));
   }
+  if (params.perPage !== undefined) {
+    query.set("perPage", String(params.perPage));
+  }
   if (params.status !== undefined) {
     query.set("status", params.status);
   }
   if (params.clientId !== undefined && params.clientId.length > 0) {
     query.set("clientId", params.clientId);
+  }
+  if (params.soldFrom !== undefined) {
+    query.set("soldFrom", params.soldFrom);
+  }
+  if (params.soldTo !== undefined) {
+    query.set("soldTo", params.soldTo);
+  }
+  if (params.delivery !== undefined) {
+    query.set("delivery", params.delivery);
   }
   const queryString = query.toString();
   const base = joinUrl(apiUrl, SALES_PATH);
@@ -176,10 +203,23 @@ const buildReceivablesListUrl = (
   if (params.page !== undefined) {
     query.set("page", String(params.page));
   }
+  if (params.perPage !== undefined) {
+    query.set("perPage", String(params.perPage));
+  }
   // `pending` default é true na API (lista só pendentes). `false` é significativo
   // (mostra todos), então enviamos sempre que definido — diferente de `lowStock`.
   if (params.pending !== undefined) {
     query.set("pending", String(params.pending));
+  }
+  // `overdue` default é false na API — só enviamos quando `true` (RF-15).
+  if (params.overdue === true) {
+    query.set("overdue", "true");
+  }
+  if (params.paidFrom !== undefined) {
+    query.set("paidFrom", params.paidFrom);
+  }
+  if (params.paidTo !== undefined) {
+    query.set("paidTo", params.paidTo);
   }
   const queryString = query.toString();
   const base = joinUrl(apiUrl, RECEIVABLES_PATH);

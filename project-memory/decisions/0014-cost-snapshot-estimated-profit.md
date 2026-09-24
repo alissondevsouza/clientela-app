@@ -2,6 +2,7 @@
 
 - **Status**: Aceito
 - **Data**: 2026-07-19
+- **Emendado por**: [ADR-0026](./0026-sold-revenue-and-daily-hub-home.md) (decisão 4 — endpoint único `GET /dashboard/summary`, removido — e a consequência "mês corrente em UTC", substituída pelo recorte em `APP_TIME_ZONE`) e [ADR-0027](./0027-monthly-goals-history.md) (decisão 3 — meta escalar em `consultants`, substituída por `monthly_goals` com histórico)
 
 ## Contexto
 

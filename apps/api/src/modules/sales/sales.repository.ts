@@ -19,10 +19,15 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   type SQL,
   sql,
 } from "drizzle-orm";
 import type { Database } from "../../db/client";
+import {
+  receivableOverdueCondition,
+  receivableOverdueExpression,
+} from "../../db/derived-expressions";
 import {
   clients,
   products,
@@ -85,13 +90,6 @@ const toSafeInteger = (value: string | number, field: string): number => {
   return parsed;
 };
 
-// `overdue` derivado no SQL com a data do servidor (CURRENT_DATE, UTC): parcela
-// vencida = due_date no passado E ainda não paga. Mesma regra no summary.
-// COALESCE obrigatório: `due_date` é NULL em `on_delivery`/`unknown` e a
-// comparação devolveria NULL, quebrando o contrato (`overdue` é boolean). Só
-// cobrança `scheduled` participa de atraso (RF-09).
-const overdueExpression: SQL<boolean> = sql<boolean>`COALESCE(${receivables.dueDate} < CURRENT_DATE, false) AND (${receivables.paidAt} IS NULL) AND (${receivables.voidedAt} IS NULL)`;
-
 // Total efetivamente recebido de uma venda: soma das cobranças pagas e NÃO
 // anuladas. Subquery escalar correlacionada para a listagem calcular o estado
 // financeiro na MESMA instrução (RF-09) — sem N+1 e sem valor de fachada.
@@ -103,9 +101,11 @@ const paidCentsExpression = sql<string>`COALESCE((
     AND "paid_receivables"."voided_at" IS NULL
 ), 0)`;
 
-// Colunas do recebível na resposta (inclui overdue derivado). Reusado por
-// getById/createSale/setReceivablePaid.
-const receivableColumns = {
+// Colunas do recebível na resposta (inclui overdue derivado a partir do
+// `todayIso` — dia local resolvido pelo relógio injetado do service, RF-04).
+// Reusado por getById/createSale/setReceivablePaid. Função (não objeto
+// estático) porque `overdue` depende do "hoje" de cada chamada.
+const receivableColumns = (todayIso: string) => ({
   id: receivables.id,
   saleId: receivables.saleId,
   amountCents: receivables.amountCents,
@@ -115,8 +115,8 @@ const receivableColumns = {
   voidedAt: receivables.voidedAt,
   createdAt: receivables.createdAt,
   updatedAt: receivables.updatedAt,
-  overdue: overdueExpression,
-};
+  overdue: receivableOverdueExpression(todayIso),
+});
 
 type SaleRow = typeof sales.$inferSelect;
 type SaleItemRow = typeof saleItems.$inferSelect;
@@ -205,11 +205,14 @@ const toSale = (
 });
 
 // Carrega a venda completa (cabeçalho + itens + recebíveis) em 3 queries
-// escopadas — sem N+1 (database.md). Aceita `db` ou `tx`.
+// escopadas — sem N+1 (database.md). Aceita `db` ou `tx`. `todayIso` (dia
+// local do relógio injetado do service) decide `overdue` das cobranças
+// (RF-04) — nunca a data corrente do servidor Postgres.
 const loadSale = async (
   executor: Executor,
   consultantId: string,
   saleId: string,
+  todayIso: string,
 ): Promise<Sale | undefined> => {
   const [saleRow] = await executor
     .select()
@@ -228,7 +231,7 @@ const loadSale = async (
     .orderBy(asc(saleItems.id));
 
   const receivableRows = await executor
-    .select(receivableColumns)
+    .select(receivableColumns(todayIso))
     .from(receivables)
     .where(eq(receivables.saleId, saleId))
     .orderBy(
@@ -390,7 +393,12 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         );
       }
 
-      const created = await loadSale(tx, consultantId, saleRow.id);
+      const created = await loadSale(
+        tx,
+        consultantId,
+        saleRow.id,
+        request.today,
+      );
       if (!created) {
         throw new Error("Falha ao carregar venda recém-criada");
       }
@@ -398,16 +406,40 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     });
   };
 
+  // Listagem (RF-14): `status` já chega como o(s) status REAL(is) — o service
+  // traduziu "sold" para `["open", "completed"]`. `soldAtFromUtc`/
+  // `soldAtToUtc` são instantes UTC prontos (RF-04): comparação sargável
+  // contra `sold_at`, sem função sobre a coluna. `delivery` filtra por
+  // `delivered_at` nulo/não nulo.
   const list = async (
     consultantId: string,
-    { page, perPage, status, clientId }: ListSalesParams,
+    {
+      page,
+      perPage,
+      status,
+      clientId,
+      soldAtFromUtc,
+      soldAtToUtc,
+      delivery,
+    }: ListSalesParams,
   ): Promise<{ rows: SaleListItem[]; total: number }> => {
     const conditions: SQL[] = [eq(sales.consultantId, consultantId)];
-    if (status) {
-      conditions.push(eq(sales.status, status));
+    if (status && status.length > 0) {
+      conditions.push(inArray(sales.status, status));
     }
     if (clientId) {
       conditions.push(eq(sales.clientId, clientId));
+    }
+    if (soldAtFromUtc !== undefined) {
+      conditions.push(gte(sales.soldAt, new Date(soldAtFromUtc)));
+    }
+    if (soldAtToUtc !== undefined) {
+      conditions.push(lt(sales.soldAt, new Date(soldAtToUtc)));
+    }
+    if (delivery === "pending") {
+      conditions.push(isNull(sales.deliveredAt));
+    } else if (delivery === "delivered") {
+      conditions.push(isNotNull(sales.deliveredAt));
     }
     const where = and(...conditions);
     const offset = (page - 1) * perPage;
@@ -441,8 +473,9 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   const getById = (
     consultantId: string,
     id: string,
+    today: string,
   ): Promise<Sale | undefined> =>
-    db.transaction((tx) => loadSale(tx, consultantId, id), {
+    db.transaction((tx) => loadSale(tx, consultantId, id, today), {
       isolationLevel: "repeatable read",
       accessMode: "read only",
     });
@@ -454,6 +487,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   const cancel = async (
     consultantId: string,
     saleId: string,
+    today: string,
   ): Promise<Sale> => {
     return db.transaction(async (tx) => {
       const now = new Date();
@@ -537,7 +571,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
           ),
         );
 
-      const result = await loadSale(tx, consultantId, saleId);
+      const result = await loadSale(tx, consultantId, saleId, today);
       if (!result) {
         throw new Error("Falha ao carregar venda cancelada");
       }
@@ -621,7 +655,11 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     });
   };
 
-  const deliver = async (consultantId: string, saleId: string): Promise<Sale> =>
+  const deliver = async (
+    consultantId: string,
+    saleId: string,
+    today: string,
+  ): Promise<Sale> =>
     db.transaction(async (tx) => {
       const [saleRow] = await tx
         .select()
@@ -704,17 +742,30 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
           updatedAt: now,
         })
         .where(eq(sales.id, saleId));
-      const result = await loadSale(tx, consultantId, saleId);
+      const result = await loadSale(tx, consultantId, saleId, today);
       if (!result) throw new SaleNotFoundError();
       return result;
     });
 
-  // Lista "quem me deve" (RF-06): join com sales para escopo + dados da cliente;
-  // ordenada por vencimento; overdue derivado no SQL. `pending` filtra só as não
-  // pagas.
+  // Lista "quem me deve" (RF-06/RF-15): join com sales para escopo + dados da
+  // cliente; overdue derivado no SQL. `pending` filtra só as não pagas;
+  // `overdue` (só válido com `pending=true`, garantido pelo schema) restringe
+  // às atrasadas via `receivableOverdueCondition(today)` — a MESMA regra do
+  // `overdue` projetado na coluna (RF-04), nunca CURRENT_DATE. Quando
+  // `paidAtFromUtc`/`paidAtToUtc` está presente (só com `pending=false`),
+  // filtra só as pagas nesse intervalo e ordena por `paid_at desc, id desc`
+  // (RF-15); senão mantém a ordem por vencimento de sempre.
   const listReceivables = async (
     consultantId: string,
-    { page, perPage, pending }: ListReceivablesParams,
+    {
+      page,
+      perPage,
+      pending,
+      overdue,
+      paidAtFromUtc,
+      paidAtToUtc,
+      today,
+    }: ListReceivablesParams,
   ): Promise<{ rows: ReceivableWithSale[]; total: number }> => {
     // Cobrança ANULADA nunca entra em "quem me deve" — nem no modo histórico
     // (`pending=false`): ela existe só para preservar o plano no detalhe da
@@ -726,12 +777,33 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     if (pending) {
       conditions.push(isNull(receivables.paidAt));
     }
+    if (overdue) {
+      conditions.push(receivableOverdueCondition(today));
+    }
+    const hasPaidRange =
+      paidAtFromUtc !== undefined || paidAtToUtc !== undefined;
+    if (hasPaidRange) {
+      conditions.push(isNotNull(receivables.paidAt));
+      if (paidAtFromUtc !== undefined) {
+        conditions.push(gte(receivables.paidAt, new Date(paidAtFromUtc)));
+      }
+      if (paidAtToUtc !== undefined) {
+        conditions.push(lt(receivables.paidAt, new Date(paidAtToUtc)));
+      }
+    }
     const where = and(...conditions);
     const offset = (page - 1) * perPage;
+    const orderBy = hasPaidRange
+      ? [desc(receivables.paidAt), desc(receivables.id)]
+      : [
+          asc(receivables.dueDate),
+          asc(receivables.dueKind),
+          asc(receivables.id),
+        ];
 
     const rows = await db
       .select({
-        ...receivableColumns,
+        ...receivableColumns(today),
         clientId: sales.clientId,
         clientName: sales.clientName,
         // LEFT JOIN por sales.client_id: null quando a cliente foi excluída
@@ -743,11 +815,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
       .innerJoin(sales, eq(receivables.saleId, sales.id))
       .leftJoin(clients, eq(sales.clientId, clients.id))
       .where(where)
-      .orderBy(
-        asc(receivables.dueDate),
-        asc(receivables.dueKind),
-        asc(receivables.id),
-      )
+      .orderBy(...orderBy)
       .limit(perPage)
       .offset(offset);
 
@@ -769,16 +837,20 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
   };
 
   // Agregado "a receber" (RF-06): SUM SQL escopado por join com sales. `FILTER`
-  // separa pendente de vencido. `::bigint` evita overflow de integer no SUM;
-  // COALESCE devolve 0 sem dados. Total financeiro nunca vem de lista paginada.
+  // separa pendente de vencido — o atraso usa `receivableOverdueCondition(today)`
+  // (dia local do relógio injetado, RF-04), nunca a data corrente do servidor
+  // Postgres. `::bigint` evita overflow de integer no SUM; COALESCE devolve 0
+  // sem dados. Total financeiro nunca vem de lista paginada.
   const receivablesSummary = async (
     consultantId: string,
+    today: string,
   ): Promise<ReceivablesSummary> => {
+    const overdueCondition = receivableOverdueCondition(today);
     const [row] = await db
       .select({
         pendingCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL), 0)::bigint`,
-        overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE), 0)::bigint`,
-        overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${receivables.paidAt} IS NULL AND ${receivables.voidedAt} IS NULL AND ${receivables.dueDate} < CURRENT_DATE)`,
+        overdueCents: sql<string>`COALESCE(SUM(${receivables.amountCents}) FILTER (WHERE ${overdueCondition}), 0)::bigint`,
+        overdueCount: sql<string>`COUNT(*) FILTER (WHERE ${overdueCondition})`,
       })
       .from(receivables)
       .innerJoin(sales, eq(receivables.saleId, sales.id))
@@ -799,6 +871,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
     consultantId: string,
     receivableId: string,
     paid: boolean,
+    today: string,
   ): Promise<Receivable> => {
     return db.transaction(async (tx) => {
       // (a) Localiza a parcela escopada (join com sales por consultant_id) e
@@ -890,7 +963,7 @@ export const createSalesRepository = (db: Database): SalesRepositoryPort => {
         .where(eq(sales.id, located.saleId));
 
       const [updated] = await tx
-        .select(receivableColumns)
+        .select(receivableColumns(today))
         .from(receivables)
         .where(eq(receivables.id, receivableId))
         .limit(1);

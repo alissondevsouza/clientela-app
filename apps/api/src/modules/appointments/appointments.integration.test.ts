@@ -36,8 +36,9 @@ import {
 } from "../auth/auth.service";
 import { createClientsRepository } from "../clients/clients.repository";
 import { createClientsService } from "../clients/clients.service";
-import { createDashboardRepository } from "../dashboard/dashboard.repository";
 import { createDashboardService } from "../dashboard/dashboard.service";
+import { createDashboardPerformanceRepository } from "../dashboard/dashboard-performance.repository";
+import { createDashboardTodayRepository } from "../dashboard/dashboard-today.repository";
 import { createLeadsRepository } from "../leads/leads.repository";
 import { createLeadsService } from "../leads/leads.service";
 import { createOrdersRepository } from "../orders/orders.repository";
@@ -184,12 +185,14 @@ describe("appointments (integração)", () => {
     });
     const salesService = createSalesService({
       repository: createSalesRepository(ctx.db),
+      clock: () => new Date(),
     });
     const ordersService = createOrdersService({
       repository: createOrdersRepository(ctx.db),
     });
     const dashboardService = createDashboardService({
-      repository: createDashboardRepository(ctx.db),
+      performanceRepository: createDashboardPerformanceRepository(ctx.db),
+      todayRepository: createDashboardTodayRepository(ctx.db),
       clock: () => new Date(),
     });
     const appointmentsService = createAppointmentsService({

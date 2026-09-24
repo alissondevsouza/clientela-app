@@ -23,18 +23,20 @@ Sempre que uma escolha for cara de reverter ou alguém no futuro puder perguntar
 | [0011](./0011-ghcr-image-deploy.md) | Deploy por imagens via GHCR (modelo pull; VPS só recebe infra) | Aceito |
 | [0012](./0012-session-auth-strategy.md) | Autenticação do CRM: sessão própria DB-backed com token opaco | Aceito |
 | [0013](./0013-sales-snapshot-set-null.md) | Vendas imutáveis: snapshot + FK SET NULL (LGPD × histórico) | Aceito (item 3, "sem edição de venda: apenas cancelamento", emendado pelo ADR-0024) |
-| [0014](./0014-cost-snapshot-estimated-profit.md) | Lucro estimado por snapshot de custo na venda (+ meta mensal e summary agregado) | Aceito |
+| [0014](./0014-cost-snapshot-estimated-profit.md) | Lucro estimado por snapshot de custo na venda (+ meta mensal e summary agregado) | Aceito (decisões 3 e 4 e o "mês em UTC" emendados pelos ADR-0026/0027) |
 | [0015](./0015-orders-lifecycle-concurrency.md) | Pedidos: transições por endpoints explícitos; exclusividade só onde há efeito colateral | Aceito |
 | [0016](./0016-personal-data-snapshot-boundary.md) | Snapshot de dado pessoal só com fundamento; sem fundamento, join + apagamento propagado | Aceito |
 | [0017](./0017-crm-subdomain-gestao.md) | CRM em subdomínio gestao.* (split por host no Caddy; substitui parcialmente o 0009) | Aceito |
-| [0018](./0018-app-time-zone.md) | Fuso de referência da aplicação (`APP_TIME_ZONE = America/Sao_Paulo`), recorte de dia em TS | Aceito |
+| [0018](./0018-app-time-zone.md) | Fuso de referência da aplicação (`APP_TIME_ZONE = America/Sao_Paulo`), recorte de dia em TS | Aceito (divergência do dashboard encerrada pelo ADR-0026) |
 | [0019](./0019-pre-deploy-db-snapshot.md) | Snapshot do banco antes da migração, fail-closed, no pipeline de deploy | Aceito |
 | [0020](./0020-crm-created-lead-consent.md) | Consentimento de lead criado pelo CRM (`source = "crm_manual"`) | Aceito |
 | [0021](./0021-shared-claude-codex-harness.md) | Harness compartilhado entre Claude Code e Codex | Aceito |
 | [0022](./0022-product-purchase-cost-mode.md) | Custo de produto manual ou derivado do desconto de compra | Aceito |
-| [0023](./0023-sale-lifecycle-and-payment-plans.md) | Ciclo de venda em aberto, planos de pagamento e reserva de estoque | Aceito ("Tempo canônico do banco" e "Faturamento por conclusão" emendados pelo ADR-0025) |
+| [0023](./0023-sale-lifecycle-and-payment-plans.md) | Ciclo de venda em aberto, planos de pagamento e reserva de estoque | Aceito ("Tempo canônico do banco" e "Faturamento por conclusão" emendados pelos ADR-0025 e ADR-0026) |
 | [0024](./0024-sale-deletion-by-consultant.md) | Exclusão de venda pela consultora (emenda "venda não se apaga") | Aceito |
-| [0025](./0025-business-dates-and-sold-at-revenue.md) | Datas de negócio informadas pela usuária e faturamento por `sold_at` | Aceito |
+| [0025](./0025-business-dates-and-sold-at-revenue.md) | Datas de negócio informadas pela usuária e faturamento por `sold_at` | Aceito (item 6 emendado pelo ADR-0026) |
+| [0026](./0026-sold-revenue-and-daily-hub-home.md) | "Vendido" como faturamento principal e home do CRM como central do dia | Aceito |
+| [0027](./0027-monthly-goals-history.md) | Meta mensal com histórico e herança (`monthly_goals`) | Aceito |
 
 ## Template
 

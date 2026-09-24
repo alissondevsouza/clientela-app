@@ -38,13 +38,15 @@ Formato:
 - **Registrado em**: 2026-07-19 (specs/crm-dashboard, ADR-0014)
 - **Plano**: aceito por ora; se surgir novo caminho de escrita em `sale_items`, exigir custo explícito (remover o default ou validar na fronteira).
 
-## `toSafeInteger` replicado em três repositories
-- **O quê**: a guarda `toSafeInteger` para agregados SQL (bigint → number seguro) está copiada em `products.repository.ts`, `sales.repository.ts` e agora `dashboard.repository.ts`.
+## `toSafeInteger` replicado em quatro repositories (gatilho de promoção disparado)
+- **O quê**: a guarda `toSafeInteger` para agregados SQL (bigint → number seguro) está copiada em `products.repository.ts`, `sales.repository.ts`, `dashboard-performance.repository.ts` e `dashboard-today.repository.ts` (o antigo `dashboard.repository.ts` foi removido no CRM-14).
 - **Impacto**: baixo (função trivial e estável); risco só de divergência se alguém "melhorar" uma cópia. A convenção atual do projeto é não cruzar a fronteira de módulo com util.
 - **Registrado em**: 2026-07-19 (specs/crm-dashboard)
 - **Plano**: promover a um `apps/api/src/lib/` compartilhado quando surgir a 4ª cópia ou uma mudança que precise valer para todas.
+- **Atualização 2026-09-23** (`specs/crm-home-period-and-daily-hub`): o painel passou a ter dois repositories (`dashboard-performance`, `dashboard-today`) e o antigo saiu — são **quatro cópias** (`products`, `sales`, `dashboard-performance`, `dashboard-today`). O gatilho disparou; a promoção fica como refactor próprio para não inflar o CRM-14.
 
-## Dashboard: `date_trunc` usa TZ da sessão Postgres; label é UTC fixo
+## ~~Dashboard: `date_trunc` usa TZ da sessão Postgres; label é UTC fixo~~ (resolvido)
+- **Resolvido em**: 2026-09-23 (`specs/crm-home-period-and-daily-hub`, ADR-0026) — o painel recorta todo período com bounds calculados em `APP_TIME_ZONE` a partir do relógio injetado; `date_trunc(now())` e `monthLabel` em UTC saíram junto com o `GET /dashboard/summary`. Histórico abaixo.
 - **O quê**: as queries de vendas/lucro do mês usam `date_trunc('month', now())` (TZ da sessão do Postgres) e são statements separados (fora de transação, cada uma reavalia `now()`), enquanto `monthLabel` é formatado em UTC fixo no service.
 - **Impacto**: na virada de mês, rótulo e números podem discordar se o Postgres de produção não estiver em UTC. A semântica UTC/borda de fuso já é aceita na spec (ADR-0014).
 - **Registrado em**: 2026-07-19 (specs/crm-dashboard, review.md SUGESTÃO)
@@ -62,7 +64,8 @@ Formato:
 - **Registrado em**: 2026-08-06 (confirmado pelo humano ao revisar o REL-06)
 - **Plano**: LP-13 — backup diário para destino externo (gera ADR sobre o destino). Enquanto não existir, fazer `pg_dump` manual antes de qualquer migração que não seja puramente aditiva.
 
-## Fuso: agenda recorta o dia em America/Sao_Paulo, dashboard ainda agrega o mês em UTC
+## ~~Fuso: agenda recorta o dia em America/Sao_Paulo, dashboard ainda agrega o mês em UTC~~ (resolvido)
+- **Resolvido em**: 2026-09-23 (`specs/crm-home-period-and-daily-hub`, ADR-0026) — painel e "atrasado" de cobranças (inclusive no módulo de vendas) passaram a usar o dia local; nenhuma query de `dashboard`/`sales` usa mais `CURRENT_DATE`. Provado por integração com relógio fixo às 22h locais. Histórico abaixo.
 - **O quê**: o ADR-0018 fixou `APP_TIME_ZONE = America/Sao_Paulo` para os recortes da agenda (calculados em TS e passados ao SQL como bounds UTC), mas o dashboard (ADR-0014) continua usando `date_trunc('month', now())` e `CURRENT_DATE`, que dependem do `TimeZone` da sessão Postgres.
 - **Impacto**: duas semânticas de "hoje"/"este mês" convivendo. Na prática, a virada de mês do dashboard acontece ~21h BRT do dia anterior, enquanto a agenda vira à meia-noite local. Nenhum número fica errado dentro da própria feature; a confusão é conceitual e aparece na borda.
 - **Registrado em**: 2026-08-05 (specs/crm-appointments, ADR-0018)
@@ -94,3 +97,15 @@ Formato:
 ## ~~Comentário de `monthSalesScope` divergia do SQL~~ (resolvido)
 - **O quê**: o comentário de `dashboard.repository.ts` afirmava que o recorte do mês era por `sold_at`, enquanto o SQL usava `completed_at`.
 - **Resolvido em**: 2026-09-19 (`specs/retroactive-sale-date-and-deletion`, RF-15, ADR-0025) — o SQL passou a recortar por `sold_at` e o comentário foi alinhado. A divergência tinha custo real: foi ela que quase fez a spec afirmar que o faturamento do mês continuaria correto para venda retroativa a prazo, quando não continuaria.
+
+## Coluna `consultants.monthly_goal_cents` ficou legada
+- **O quê**: desde o CRM-14 a meta vive em `monthly_goals` (ADR-0027). A coluna antiga continua no schema, sem leitura nem escrita pelo código — foi mantida para o rollback de imagem funcionar sem tocar no banco.
+- **Impacto**: nenhum funcional; é estado morto que confunde quem lê o schema. Num rollback, o código antigo volta a ler o valor pré-deploy (metas editadas depois se perdem — aceito no ADR-0027).
+- **Registrado em**: 2026-09-23 (`specs/crm-home-period-and-daily-hub`)
+- **Plano**: migração de contração (`DROP COLUMN`) num item próprio, depois que o CRM-14 estiver estável em produção e com backup externo (LP-13).
+
+## `appLocalDateTimeToUtc` no dia de início do horário de verão (antes de 2019)
+- **O quê**: no dia em que o horário de verão começava em São Paulo (meia-noite local inexistente), `appLocalDateTimeToUtc(dia, "00:00")` devolve 23:00 do dia anterior, e o comentário de `packages/shared/src/time.ts` descreve o contrário (deslocar para frente).
+- **Impacto**: só filtros por **dia** que começam exatamente num desses dias (ex.: `soldFrom` em 04/11/2018) incluem uma hora da véspera. Bordas de mês e a invariante cartão = lista não são afetadas (os dois lados usam o mesmo helper). Vendas retroativas são gravadas ao meio-dia, longe da borda.
+- **Registrado em**: 2026-09-23 (QA rodada 1 de `specs/crm-home-period-and-daily-hub`, SUGESTÃO)
+- **Plano**: aceito por ora; corrigir o helper (e o comentário) se surgir uso de recorte de dia em datas anteriores a 2019.

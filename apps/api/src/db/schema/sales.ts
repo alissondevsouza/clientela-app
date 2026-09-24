@@ -180,6 +180,9 @@ export const sales = pgTable(
     // listagens escopadas por consultora e o lookup pela cliente vinculada.
     index("sales_consultant_id_idx").on(table.consultantId),
     index("sales_client_id_idx").on(table.clientId),
+    // Recortes de período (painel/listagem) filtram por consultora e
+    // ordenam/comparam por sold_at (RF-27) — índice composto dedicado.
+    index("sales_consultant_sold_at_idx").on(table.consultantId, table.soldAt),
   ],
 );
 

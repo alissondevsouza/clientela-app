@@ -6,9 +6,9 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { setReceivablePaidAction } from "@/app/(crm)/crm/sales/actions";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { receivableWhatsAppUrl } from "@/lib/dashboard-messages";
 import { formatBRL, formatDateBr } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { buildWhatsAppUrl, toWaPhone } from "@/lib/whatsapp";
 
 const DUE_DATE_LABEL = "Vencimento";
 const OVERDUE_TEXT = "Atrasada";
@@ -21,17 +21,21 @@ const saleDetailHref = (id: string): string => `/crm/sales/${id}`;
 const whatsappAriaLabel = (name: string): string =>
   `Cobrar ${name} no WhatsApp`;
 
-// Linha da lista "Quem me deve" (RF-11): valor, vencimento, cliente e atalho de
-// cobrança por WhatsApp (quando a venda tem cliente vinculada — número
-// normalizado para E.164 via `toWaPhone`). "Atrasada" é destacada TEXTUALMENTE
-// (a cor é só reforço — a11y). A baixa dispara a Server Action com
-// `useTransition` (desabilita o botão enquanto roda; erro em `role="alert"`),
-// mesmo padrão de `LeadActions` — não é `<form>` puro para dar feedback de erro
-// à usuária sem recarregar (web.md: estado de erro obrigatório).
+// Linha das visões "A receber"/"Atrasadas" (RF-11/RF-17): valor, vencimento,
+// cliente e atalho de cobrança por WhatsApp COM a mensagem pronta do RF-19
+// (`receivableWhatsAppUrl` decide a variante atrasada/vence hoje/a vencer por
+// `dueDate` × `todayIso`; sem `dueDate` ⇒ link sem mensagem; telefone
+// ausente/inválido ⇒ sem botão). "Atrasada" é destacada TEXTUALMENTE (a cor é
+// só reforço — a11y). A baixa dispara a Server Action com `useTransition`
+// (desabilita o botão enquanto roda; erro em `role="alert"`), mesmo padrão de
+// `LeadActions` — não é `<form>` puro para dar feedback de erro à usuária sem
+// recarregar (web.md: estado de erro obrigatório).
 export function ReceivableRow({
   receivable,
+  todayIso,
 }: {
   receivable: ReceivableListItem;
+  todayIso: string;
 }) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -39,10 +43,7 @@ export function ReceivableRow({
   const clientLabel =
     receivable.clientName.length > 0 ? receivable.clientName : NO_CLIENT_TEXT;
 
-  const whatsappHref =
-    receivable.clientWhatsapp !== null
-      ? buildWhatsAppUrl({ phone: toWaPhone(receivable.clientWhatsapp) })
-      : null;
+  const whatsappHref = receivableWhatsAppUrl(receivable, todayIso);
 
   const runMarkPaid = () => {
     setErrorMessage(null);

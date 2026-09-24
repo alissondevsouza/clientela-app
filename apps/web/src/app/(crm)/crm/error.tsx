@@ -2,9 +2,9 @@
 
 import { Button } from "@/components/ui/button";
 
-const ERROR_TITLE = "Não foi possível carregar o painel";
+const ERROR_TITLE = "Não foi possível carregar o início";
 const ERROR_DESCRIPTION =
-  "Ocorreu um problema ao buscar o resumo do mês. Verifique sua conexão e tente novamente.";
+  "Ocorreu um problema inesperado. Verifique sua conexão e tente novamente.";
 const RETRY_LABEL = "Tentar novamente";
 
 type CrmHomeErrorProps = {
@@ -14,8 +14,11 @@ type CrmHomeErrorProps = {
   reset: () => void;
 };
 
-// Error boundary da home do CRM (RF-05/web.md): Client Component obrigatório
-// pelo Next. Mensagem pt-BR + retry via `reset()` — espelha `sales/error.tsx`.
+// Error boundary da home do CRM (RF-13/RF-18/web.md): Client Component
+// obrigatório pelo Next — só entra em jogo se uma exceção NÃO tratada escapar
+// de algum dos três blocos (cada bloco já isola sua própria falha esperada em
+// `SectionError`, dentro do `Suspense`). Mensagem pt-BR genérica + retry via
+// `reset()` — espelha `sales/error.tsx`.
 export default function CrmHomeError({ reset }: CrmHomeErrorProps) {
   return (
     <div className="flex flex-col items-center gap-4 rounded-xl border border-dashed border-border px-6 py-12 text-center">

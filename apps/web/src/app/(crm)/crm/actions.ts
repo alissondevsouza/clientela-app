@@ -12,10 +12,12 @@ const HOME_PATH = "/crm";
 const LOGIN_PATH = "/login";
 
 // Resultado observável pela UI (mesmo padrão de `products/actions.ts`): sucesso
-// devolve o valor persistido (a UI sincroniza o estado local sem esperar um
-// novo fetch); falha devolve mensagem pt-BR tratável no `role="alert"` do form.
+// devolve o valor persistido e o MÊS gravado (RF-09: a meta agora tem
+// histórico por mês, sempre o corrente — decidido pelo relógio do servidor); a
+// UI sincroniza o estado local sem esperar um novo fetch. Falha devolve
+// mensagem pt-BR tratável no `role="alert"` do form.
 export type UpdateGoalActionResult =
-  | { ok: true; monthlyGoalCents: number | null }
+  | { ok: true; month: string; monthlyGoalCents: number | null }
   | { ok: false; message: string };
 
 // Lê o Bearer do cookie de sessão. O layout do grupo `(crm)` já barra sessão
@@ -48,5 +50,9 @@ export const updateGoalAction = async (
   }
 
   revalidatePath(HOME_PATH);
-  return { ok: true, monthlyGoalCents: result.monthlyGoalCents };
+  return {
+    ok: true,
+    month: result.month,
+    monthlyGoalCents: result.monthlyGoalCents,
+  };
 };

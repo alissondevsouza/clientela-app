@@ -28,7 +28,8 @@ import {
 } from "../clients/clients.service";
 import {
   createDashboardService,
-  type DashboardRepositoryPort,
+  type DashboardPerformanceRepositoryPort,
+  type DashboardTodayRepositoryPort,
 } from "../dashboard/dashboard.service";
 import {
   createOrdersService,
@@ -166,13 +167,19 @@ const noopOrdersRepository: OrdersRepositoryPort = {
 };
 
 // Dashboard em memória: este arquivo só exercita `/leads` e `/health` —
-// nenhuma rota autenticada de dashboard é chamada. O fake só satisfaz o
+// nenhuma rota autenticada de dashboard é chamada. Os fakes só satisfazem o
 // `createApp`.
-const noopDashboardRepository: DashboardRepositoryPort = {
-  summary: async () => {
+const noopDashboardPerformanceRepository: DashboardPerformanceRepositoryPort = {
+  performance: async () => {
     throw new Error("dashboard não é exercitado neste teste");
   },
-  updateGoal: async () => {
+  upsertGoal: async () => {
+    throw new Error("dashboard não é exercitado neste teste");
+  },
+};
+
+const noopDashboardTodayRepository: DashboardTodayRepositoryPort = {
+  today: async () => {
     throw new Error("dashboard não é exercitado neste teste");
   },
 };
@@ -229,12 +236,14 @@ const buildNoopAuthDeps = () => ({
   }),
   salesService: createSalesService({
     repository: noopSalesRepository,
+    clock: () => new Date(),
   }),
   ordersService: createOrdersService({
     repository: noopOrdersRepository,
   }),
   dashboardService: createDashboardService({
-    repository: noopDashboardRepository,
+    performanceRepository: noopDashboardPerformanceRepository,
+    todayRepository: noopDashboardTodayRepository,
     clock: () => new Date(),
   }),
   appointmentsService: createAppointmentsService({
