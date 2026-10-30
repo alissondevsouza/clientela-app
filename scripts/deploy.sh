@@ -4,7 +4,8 @@
 # O runner do GitHub Actions executa este script: sincroniza SÓ os arquivos de
 # infra para a VPS e, remotamente:
 #   login no GHCR → pull das imagens (tag EXATA) → parar writers → SNAPSHOT do
-#   banco → migração → up -d → smoke → grava .image-tag → image prune -af.
+#   banco → migração → up -d → smoke → grava .image-tag → remove as imagens
+#   clientela-* antigas (só as desta aplicação: a VPS é compartilhada, ADR-0028).
 # O snapshot pré-migração (ADR-0019) é fail-closed: se falhar, o deploy aborta
 # antes de tocar o schema. Ele NÃO é backup — mora na própria VPS; o backup
 # externo é o LP-13.
@@ -49,7 +50,9 @@ DRY_RUN=false
 readonly GHCR_HOST="ghcr.io"
 
 # Arquivos de infra sincronizados (SÓ estes — a VPS não recebe código-fonte).
-readonly INFRA_FILES=(docker-compose.yml Caddyfile .env.production.example)
+# O Caddyfile saiu daqui: o proxy é da VPS (infra-vps, ADR-0028). O `compose` é o
+# script que a VPS usa no lugar de `docker compose` (lê a tag do .image-tag).
+readonly INFRA_FILES=(docker-compose.yml compose .env.production.example)
 
 # Marcador one-shot da transição: uma vez presente, a limpeza nunca mais roda.
 readonly LAYOUT_MARKER=".layout-v2"
@@ -179,7 +182,7 @@ if [ "$DRY_RUN" = true ]; then
 	echo " 10/13 ssh remoto: IMAGE_TAG=${IMAGE_TAG_DISPLAY} docker compose up -d"
 	echo " 11/13 ssh remoto: smoke por curl do DOMAIN (1º endereço) e do CRM_DOMAIN"
 	echo " 12/13 ssh remoto: gravar IMAGE_TAG em \${DEPLOY_PATH}/.image-tag após smoke verde"
-	echo " 13/13 ssh remoto: docker image prune -af  (remove tags sha antigas)"
+	echo " 13/13 ssh remoto: remove as imagens ghcr.io/<owner>/clientela-* fora da tag nova (nunca prune geral: VPS compartilhada)"
 	echo "  +    sempre: docker logout ${GHCR_HOST}  (trap de saída, não numerado)"
 	echo ""
 	echo "  DEPLOY_HOST=${DEPLOY_HOST:-<não definido>}"
@@ -338,9 +341,14 @@ ssh "$DEPLOY_HOST" "curl -fsS -o /dev/null -w 'HTTP %{http_code}\\n' '${CRM_DOMA
 log "12/13 Persistindo a tag em ${DEPLOY_PATH}/.image-tag após smoke verde"
 printf '%s' "$IMAGE_TAG" | ssh "$DEPLOY_HOST" "cat > '${DEPLOY_PATH}/.image-tag'"
 
-log "13/13 Removendo imagens órfãs (prune -af — remove tags sha antigas)"
-# -a: sem isso o prune não remove as tags sha-<curto> anteriores (não são
-# "dangling"), e o disco do KVM 2 cresceria sem teto a cada deploy.
-ssh "$DEPLOY_HOST" "docker image prune -af"
+log "13/13 Removendo as imagens clientela-* antigas (só desta aplicação)"
+# A VPS é compartilhada (ADR-0028): um `docker image prune -af` apagaria imagens
+# de outras aplicações — a versão anterior que o Gizito guarda para rollback e
+# as que um deploy dele acabou de puxar. Aqui só saem as tags clientela-* que não
+# são a nova; `docker image rm` recusa imagem em uso, então nada que está no ar sai.
+ssh "$DEPLOY_HOST" "docker image ls --format '{{.Repository}}:{{.Tag}}' \
+	| grep -E '^ghcr\.io/${GHCR_OWNER_REMOTE}/clientela-(web|api|migrate):' \
+	| grep -v ':${IMAGE_TAG}\$' \
+	| xargs -r docker image rm >/dev/null 2>&1 || true"
 
 log "Deploy concluído."

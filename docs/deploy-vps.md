@@ -9,18 +9,20 @@ Passo a passo completo para colocar **a landing page e o CRM** no ar: segurança
 
 É o **mesmo app web** nos dois endereços — a separação é por host no proxy (Caddy), com certificado HTTPS automático para os três hosts.
 
+> **Proxy da VPS (INF-09, ADR-0028, 29/10/2026).** A VPS é compartilhada com o Gizito, e o Caddy deixou de ser um serviço deste compose: ele é o `proxy/` do repositório `infra-vps`, no projeto `plataforma` (`/srv/plataforma` na VPS), o único com as portas 80 e 443. Os blocos da Clientela (raiz e `www`, `gestao.` com `X-Robots-Tag` e redirecionamento para `/crm`) e os certificados do Let's Encrypt continuam iguais, só que no `proxy/caddy/Caddyfile` de lá. O `web` daqui entra na rede `clientela-edge`, criada pelo proxy, com o alias `clientela-web`. Mudar algo do proxy é commit no `infra-vps` e `git pull` na VPS, não deploy deste repositório. A pasta da VPS passou de `/opt/clientela` para `/srv/apps/clientela`; a troca, com a cópia dos certificados e a volta atrás, está no `docs/proximos-passos.md` do `infra-vps`.
+
 **O que já está pronto no repositório** (você não precisa criar nada disso):
 
 | Arquivo | Papel |
 |---|---|
-| `docker-compose.yml` | Orquestra caddy, web, api, postgres e o job de migração na VPS (usa imagens do GHCR) |
-| `Caddyfile` | Proxy reverso + HTTPS automático (Let's Encrypt) |
+| `docker-compose.yml` | Orquestra web, api, postgres e o job de migração na VPS (usa imagens do GHCR); o web entra na rede `clientela-edge` do proxy da VPS |
+| `compose` | Script que roda o `docker compose` da pasta com a tag do `.image-tag`; na VPS, use `./compose <comando>` |
 | `apps/web/Dockerfile`, `apps/api/Dockerfile` | Build das imagens **no runner do GitHub Actions** (a VPS não builda mais — ADR-0011) |
 | `.env.production.example` | Template do `.env` de produção (você preenche NA VPS) |
 | `scripts/deploy.sh` | O processo de deploy: sincroniza SÓ a infra → login no GHCR → pull da imagem → migração → up → verificação — **executado pelo GitHub Actions** |
 | `.github/workflows/ci.yml` + `deploy.yml` | CI (lint/typecheck/testes) e deploy automático (build+push no GHCR → pull na VPS) |
 
-O fluxo é: **preparar DNS → preparar a VPS (uma vez) → criar o `.env` na VPS (uma vez) → publicar no GitHub, cadastrar os secrets e as Variables de build (uma vez) → `push` na main = deploy automático**. O modelo é **pull via GHCR** (ADR-0011): o GitHub Actions builda as imagens no runner, publica no GitHub Container Registry (`ghcr.io`) e a VPS só **puxa** a imagem pronta, migra e sobe — no servidor ficam apenas arquivos de infra (`docker-compose.yml`, `Caddyfile`, `.env` e o template). A VPS não recebe código-fonte nem gasta CPU buildando.
+O fluxo é: **preparar DNS → preparar a VPS (uma vez) → criar o `.env` na VPS (uma vez) → publicar no GitHub, cadastrar os secrets e as Variables de build (uma vez) → `push` na main = deploy automático**. O modelo é **pull via GHCR** (ADR-0011): o GitHub Actions builda as imagens no runner, publica no GitHub Container Registry (`ghcr.io`) e a VPS só **puxa** a imagem pronta, migra e sobe — no servidor ficam apenas arquivos de infra (`docker-compose.yml`, `compose`, `.env` e o template). A VPS não recebe código-fonte nem gasta CPU buildando.
 
 ---
 
@@ -40,7 +42,7 @@ ssh-keygen -t ed25519 -C "alisson@clientela"
 
 ## 1. DNS primeiro (a propagação leva tempo — comece por aqui)
 
-O Caddy só consegue emitir o certificado HTTPS quando o domínio **já aponta** para a VPS. Fazendo o DNS agora, ele propaga enquanto você configura o servidor.
+O Caddy do proxy da VPS só consegue emitir o certificado HTTPS quando o domínio **já aponta** para a VPS. Fazendo o DNS agora, ele propaga enquanto você configura o servidor.
 
 1. No **hPanel da Hostinger**, anote o **IP da VPS** (VPS → sua instância → painel).
 2. Ainda no hPanel: **Domínios → consultoralaisbarbosa.com.br → DNS / Zona DNS**. Crie/ajuste estes registros (remova registros A/AAAA/CNAME conflitantes que a Hostinger cria por padrão apontando para parking):
@@ -164,19 +166,19 @@ Só existe **um** diretório para criar manualmente — o resto quem preenche é
 
 ```bash
 # na VPS, como deploy:
-sudo mkdir -p /opt/clientela
-sudo chown deploy:deploy /opt/clientela
+sudo mkdir -p /srv/apps/clientela
+sudo chown deploy:deploy /srv/apps/clientela
 ```
 
 Como fica o layout — **só infra** (modelo pull, ADR-0011): a VPS nunca recebe código-fonte.
 
 ```
-/opt/clientela/                  ← DEPLOY_PATH (SÓ arquivos de infra)
+/srv/apps/clientela/                  ← DEPLOY_PATH (SÓ arquivos de infra)
 ├── .env                         ← VOCÊ cria (passo 4). Único arquivo com segredos. NUNCA sai da VPS
 ├── .image-tag                   ← o pipeline grava a tag (sha-<curto>) do último deploy. Usada no `up` manual/pós-reboot
 ├── .env.production.example      ← template (vem do repo, sem segredos)
 ├── docker-compose.yml           ← orquestração (vem do repo)
-└── Caddyfile                    ← config do proxy (vem do repo)
+└── compose                      ← script: docker compose com a tag do .image-tag (vem do repo)
 ```
 
 > **Transição automática (só relevante se você já rodou o modelo antigo — ADR-0010):** o deploy anterior sincronizava o repositório inteiro via rsync (`apps/`, `packages/`, `scripts/`, `.git`…). No **primeiro deploy pelo novo pipeline**, o `scripts/deploy.sh` faz uma limpeza **one-shot e cirúrgica**: só age se detectar resíduo real do layout antigo (existe `apps/` ou `packages/`) e remove **apenas uma blacklist explícita** desses arquivos conhecidos do repo — qualquer arquivo seu (`backup-*.sql`, `.env`, `.image-tag`, dumps soltos) fica **intocado**. Ao terminar grava o marcador `.layout-v2` e nunca mais roda a limpeza. Você não precisa fazer nada — em VPS novas não há o que limpar.
@@ -186,7 +188,7 @@ Dados persistentes **não** ficam em pastas — são volumes nomeados do Docker 
 | Volume | Conteúdo |
 |---|---|
 | `clientela_pg_data` (nome conforme compose) | Dados do Postgres (`/var/lib/postgresql`) |
-| `caddy_data` / `caddy_config` | Certificados TLS e estado do Caddy |
+| `caddy_data` / `caddy_config` | Certificados TLS do Caddy antigo; depois da troca do proxy (ADR-0028), os certificados ficam em `/srv/data/plataforma/proxy` e estes volumes podem ser apagados quando o site estiver conferido |
 
 ---
 
@@ -194,9 +196,9 @@ Dados persistentes **não** ficam em pastas — são volumes nomeados do Docker 
 
 ```bash
 # na VPS:
-cd /opt/clientela
+cd /srv/apps/clientela
 # (no primeiro deploy o pipeline ainda não sincronizou o template; crie-o a partir
-#  do repo local — da SUA máquina: scp .env.production.example deploy@IP_DA_VPS:/opt/clientela/ )
+#  do repo local — da SUA máquina: scp .env.production.example deploy@IP_DA_VPS:/srv/apps/clientela/ )
 cp .env.production.example .env
 chmod 600 .env
 nano .env
@@ -210,9 +212,9 @@ Preencha assim (substitua `SENHA_GERADA` e o telefone real):
 # GHCR — dono do pacote das imagens no GitHub, em MINÚSCULAS (owner lowercase)
 GHCR_OWNER=seu_usuario_github
 
-# Caddy — landing: os DOIS endereços no mesmo bloco (raiz + www, ADR-0009)
+# Endereços públicos — usados pelo smoke do deploy (o proxy da VPS tem os mesmos
+# hosts fixos no proxy/caddy/Caddyfile do infra-vps, ADR-0028)
 DOMAIN=consultoralaisbarbosa.com.br, www.consultoralaisbarbosa.com.br
-# Caddy — CRM em host próprio (ADR-0017); a raiz dele redireciona para /crm
 CRM_DOMAIN=gestao.consultoralaisbarbosa.com.br
 
 # Postgres (interno; nunca exposto)
@@ -302,7 +304,7 @@ No repositório: **Settings → Secrets and variables → Actions → New reposi
 | `DEPLOY_SSH_KEY` | Conteúdo da chave **privada** dedicada | `cat ~/.ssh/clientela_deploy` (copie tudo, incluindo as linhas `BEGIN/END`) |
 | `DEPLOY_KNOWN_HOSTS` | Saída do keyscan (passo 5.4) | `ssh-keyscan -t ed25519 IP_DA_VPS` |
 | `DEPLOY_HOST` | `deploy@IP_DA_VPS` (usuário@host) | o mesmo IP do passo 5.4 |
-| `DEPLOY_PATH` | `/opt/clientela` | o diretório criado no passo 3 |
+| `DEPLOY_PATH` | `/srv/apps/clientela` | o diretório criado no passo 3 |
 
 > Secrets do GitHub não podem ser lidos de volta depois de salvos — se errar, é só sobrescrever. Nunca cole a chave **privada** em nenhum outro lugar (chat, issue, log).
 
@@ -345,20 +347,20 @@ O que acontece (modelo pull via GHCR — ADR-0011): o **GitHub Actions** dispara
 
 O que o job `deploy` executa na VPS (o `scripts/deploy.sh`, falhando cedo com mensagem clara se algo estiver errado):
 
-1. **rsync SÓ da infra** (`docker-compose.yml`, `Caddyfile`, `.env.production.example`) para `/opt/clientela` — sem `--delete`; o `.env` e o `.image-tag` da VPS nunca são tocados.
-2. Confere que `/opt/clientela/.env` existe e faz a **transição idempotente** (remove código-fonte de deploys antigos, se houver).
+1. **rsync SÓ da infra** (`docker-compose.yml`, `compose`, `.env.production.example`) para `/srv/apps/clientela` — sem `--delete`; o `.env` e o `.image-tag` da VPS nunca são tocados.
+2. Confere que `/srv/apps/clientela/.env` existe e faz a **transição idempotente** (remove código-fonte de deploys antigos, se houver).
 3. **Login no GHCR** com o token efêmero do run (via stdin; logout garantido no fim).
 4. **Pull** das 3 imagens na tag `sha-<curto>` exata (`docker compose --profile tools pull`) — nada é buildado na VPS.
 5. Para **`api` e `web`**, confirma que não há writer da aplicação e só então cria o snapshot pré-migração.
 6. **Migração do banco** (`docker compose run --rm migrate`, sem `--build`).
-7. **Sobe tudo** na nova tag, faz smoke obrigatório da landing e do CRM, grava a tag em `.image-tag` e remove imagens antigas (`prune -af`).
+7. **Sobe tudo** na nova tag, faz smoke obrigatório da landing e do CRM, grava a tag em `.image-tag` e remove as imagens `clientela-*` antigas (nunca um `prune` geral: a VPS é compartilhada, ADR-0028).
 
 > **PRIMEIRO RUN**: fique de olho na aba **Actions** no primeiro push. Se o job `deploy` falhar logo no SSH, quase sempre é secret errado; se o pull vier `denied`, é permissão/pacote (veja "Problemas comuns"). Erros de build agora aparecem no job **`build-push`**, não mais na VPS.
 
-No primeiro `up`, o Caddy pede os certificados ao Let's Encrypt para os **três** endereços (raiz, `www` e `gestao`) — leva segundos **se o DNS já propagou**. Acompanhe com:
+Os certificados dos **três** endereços (raiz, `www` e `gestao`) são do proxy da VPS. Numa VPS nova, ele os pede ao Let's Encrypt na primeira subida — leva segundos **se o DNS já propagou**. Acompanhe com:
 
 ```bash
-ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose logs -f caddy"
+ssh deploy@IP_DA_VPS "sudo docker logs -f proxy"
 # procure por "certificate obtained successfully"
 ```
 
@@ -370,8 +372,8 @@ No modelo pull, o `scripts/deploy.sh` só **puxa** imagens já publicadas no GHC
 cd /home/alisson/workspace/current-projects/clientela-app
 export GHCR_TOKEN=ghp_seu_pat_read_packages
 export IMAGE_TAG=sha-1a2b3c4   # uma tag já publicada (veja em GitHub → repo → Packages)
-DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/opt/clientela ./scripts/deploy.sh --dry-run  # ensaio
-DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/opt/clientela ./scripts/deploy.sh            # real
+DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/srv/apps/clientela ./scripts/deploy.sh --dry-run  # ensaio
+DEPLOY_HOST=deploy@IP_DA_VPS DEPLOY_PATH=/srv/apps/clientela ./scripts/deploy.sh            # real
 ```
 
 > **Limite honesto (ADR-0011):** se o **GitHub estiver fora do ar**, não há build nem pull — sem imagem publicada, não há o que puxar. Nesse cenário resta apenas o que já roda na VPS (os containers voltam sozinhos por restart policy após reboot). Publicar uma imagem NOVA manualmente exigiria buildar localmente e um `docker login` com um PAT `write:packages` — fora do escopo deste script. O caminho normal é sempre o **Run workflow** no GitHub.
@@ -382,7 +384,7 @@ O CRM (`gestao.…`) só tem **uma** usuária — a consultora — e ela nasce p
 
 ```bash
 ssh deploy@IP_DA_VPS
-cd /opt/clientela
+cd /srv/apps/clientela
 
 # Defina aqui a SENHA que a consultora usará no login do CRM: rode a linha
 # abaixo, digite a senha quando o prompt aparecer (nada é exibido enquanto
@@ -410,8 +412,8 @@ Teste em seguida: `https://gestao.consultoralaisbarbosa.com.br` → redireciona 
 
 ```bash
 # Tudo de pé e saudável?
-ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose ps"
-# → caddy/web/api/postgres "Up (healthy)"; portas publicadas SÓ no caddy (80/443)
+ssh deploy@IP_DA_VPS "cd /srv/apps/clientela && docker compose ps"
+# → web/api/postgres "Up (healthy)"; nenhuma porta publicada (80/443 são do proxy da VPS)
 
 # Landing no ar com HTTPS (e www funcionando):
 curl -I https://consultoralaisbarbosa.com.br          # HTTP/2 200
@@ -435,7 +437,7 @@ ssh deploy@IP_DA_VPS "sudo ss -tlnp | grep -v 127.0.0.1"
 Conferência direto no banco (alternativa/reforço):
 
 ```bash
-ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
+ssh deploy@IP_DA_VPS "cd /srv/apps/clientela && docker compose exec postgres \
   psql -U clientela -d clientela -c 'SELECT id, name, whatsapp, status, consent_at FROM leads ORDER BY created_at DESC LIMIT 5;'"
 ```
 
@@ -447,17 +449,17 @@ ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec postgres \
 |---|---|
 | Publicar mudanças | `git push origin main` (deploy automático) ou, na aba **Actions**, botão **Run workflow** do workflow **Deploy** |
 | Publicar sem GitHub (fallback) | seção 6 "Fallback manual" — exige PAT `read:packages` e `IMAGE_TAG` de imagem já publicada |
-| Subir/reiniciar tudo manualmente na VPS | `cd /opt/clientela && IMAGE_TAG=$(cat .image-tag) docker compose up -d` (usa a última tag puxada; sem isso o compose cairia em `latest`, que o deploy nunca publica de forma confiável) |
-| Ver logs | `docker compose logs -f web` (ou `api`, `caddy`, `postgres`) na VPS |
+| Subir/reiniciar tudo manualmente na VPS | `cd /srv/apps/clientela && ./compose up -d` (o script usa a última tag puxada, do `.image-tag`; sem ela o compose cairia em `latest`, que o deploy nunca publica de forma confiável) |
+| Ver logs | `./compose logs -f web` (ou `api`, `postgres`) na VPS; o proxy é `sudo docker logs -f proxy` |
 | Reiniciar um serviço | `docker compose restart web` |
 | Ver leads capturados | no CRM: `https://gestao.consultoralaisbarbosa.com.br/crm/leads` (o `psql` da seção 7 segue como alternativa) |
 | Trocar a senha do CRM | rodar o seed de novo (seção 6, "Criar o login do CRM") — upsert idempotente pelo mesmo e-mail |
-| Backup manual do banco | `mkdir -p ~/backups && docker compose exec -T postgres pg_dump -U clientela clientela > ~/backups/backup-$(date +%F).sql` e **copie para fora da VPS** (`scp`). Grave em `~/backups/` (**fora de `/opt/clientela`**): a limpeza de transição do deploy só age dentro de `/opt/clientela` e nunca alcança esse diretório |
+| Backup manual do banco | `mkdir -p ~/backups && docker compose exec -T postgres pg_dump -U clientela clientela > ~/backups/backup-$(date +%F).sql` e **copie para fora da VPS** (`scp`). Grave em `~/backups/` (**fora de `/srv/apps/clientela`**): a limpeza de transição do deploy só age dentro de `/srv/apps/clientela` e nunca alcança esse diretório |
 | Restaurar um snapshot pré-deploy | `zcat ~/backups/predeploy-<tag>-<UTC>.sql.gz \| docker compose exec -T postgres psql -U clientela -d clientela` (banco **vazio**; para substituir um banco com dados, recrie-o antes: `psql -U clientela -d postgres -c 'DROP DATABASE clientela' -c 'CREATE DATABASE clientela'` com a API parada) |
 
 > Após **reboot** da VPS os containers voltam sozinhos (restart policy `unless-stopped`) — sem `pull` (as imagens já estão locais). Só use o `up` manual acima se precisar recriar um container (ex.: depois de um `down`); ele lê a tag correta de `.image-tag`.
 
-> 🛟 **Cutover fail-closed (CRM-12):** depois do pull, o deploy para `api` e `web`, confirma que não restou writer da aplicação e só então grava o dump em `~/backups/predeploy-<tag>-<UTC>.sql.gz`, mantendo os 5 mais recentes. O caminho é gravado em `/opt/clientela/.predeploy-snapshot-path`. Há indisponibilidade curta neste intervalo.
+> 🛟 **Cutover fail-closed (CRM-12):** depois do pull, o deploy para `api` e `web`, confirma que não restou writer da aplicação e só então grava o dump em `~/backups/predeploy-<tag>-<UTC>.sql.gz`, mantendo os 5 mais recentes. O caminho é gravado em `/srv/apps/clientela/.predeploy-snapshot-path`. Há indisponibilidade curta neste intervalo.
 >
 > Se o dump falhar, o schema ainda não foi tocado: o script religa os containers anteriores e aborta; libere espaço (`df -h`, `docker image prune -af`) e tente novamente. Se a migração, subida ou smoke falhar **depois** de iniciada a migração, `api` e `web` permanecem parados. Não reinicie automaticamente a versão anterior contra um schema possivelmente incompatível: escolha um forward-fix ou, com writers parados e confirmação humana, restaure manualmente o snapshot. O passo sobe o `postgres` e espera ficar `healthy` antes de dumpar — numa VPS nova o dump sai praticamente vazio, o que é correto.
 >
@@ -467,7 +469,7 @@ Migração que **reescreve dados existentes** (a `0012` do ciclo de venda é a p
 
 ```bash
 # 1. Dump da produção para a sua máquina (só leitura na VPS)
-ssh deploy@IP_DA_VPS "cd /opt/clientela && docker compose exec -T postgres sh -c \
+ssh deploy@IP_DA_VPS "cd /srv/apps/clientela && docker compose exec -T postgres sh -c \
   'pg_dump -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" | gzip -c > /tmp/prod-rehearsal.sql.gz
 
 # 2. Postgres descartável na MESMA versão da produção
@@ -508,7 +510,7 @@ O Postgres não publica porta nenhuma — nem no localhost da VPS (só a rede in
 
 ```bash
 # na VPS, uma única vez:
-cd /opt/clientela
+cd /srv/apps/clientela
 cat > docker-compose.override.yml <<'EOF'
 # Override LOCAL da VPS (não versionado): Postgres acessível SÓ do loopback da
 # própria VPS, para túnel SSH de análise (DBeaver). NUNCA remover o 127.0.0.1 —
@@ -543,8 +545,9 @@ Alternativa sem DBeaver: `ssh -N -L 15432:127.0.0.1:5432 deploy@IP_DA_VPS` e con
 | Sintoma | Causa provável | Solução |
 |---|---|---|
 | Job de deploy falha em `Permission denied` / `Host key verification failed` no step SSH | Um dos 4 secrets está errado | Confira os 4 (seção 5.5): `DEPLOY_SSH_KEY` é a chave **privada** dedicada; `DEPLOY_KNOWN_HOSTS` foi capturada do **mesmo IP** de `DEPLOY_HOST`; a pública está no `authorized_keys` do `deploy` (passo 5.3) |
-| Site não abre / certificado não emite; logs do caddy com erros ACME | DNS ainda não propagou, ou porta 80 bloqueada | Confira `dig +short` (passo 1.3) e `sudo ufw status`; o Caddy fica em retry sozinho — resolvido o DNS, emite em minutos |
-| Landing abre mas `gestao.` não (ou sem certificado) | Registro A `gestao` faltando/não propagado, ou `CRM_DOMAIN` ausente no `.env` | `dig +short gestao.consultoralaisbarbosa.com.br` (passo 1) e confira `CRM_DOMAIN` no `.env` (passo 4); depois `docker compose restart caddy` |
+| Site não abre / certificado não emite; logs do proxy com erros ACME | DNS ainda não propagou, ou porta 80 bloqueada | Confira `dig +short` (passo 1.3) e `sudo ufw status`; o Caddy do proxy fica em retry sozinho — resolvido o DNS, emite em minutos |
+| Landing abre mas `gestao.` não (ou sem certificado) | Registro A `gestao` faltando/não propagado, ou o bloco do host faltando no `proxy/caddy/Caddyfile` do `infra-vps` | `dig +short gestao.consultoralaisbarbosa.com.br` (passo 1) e confira o bloco no `infra-vps`; depois `sudo docker restart proxy` |
+| `network clientela-edge declared as external, but could not be found` no `up` | O proxy da VPS ainda não foi criado (é ele que cria a rede) | Em `/srv/plataforma`: `./compose up --no-start proxy` antes da troca, ou `./compose up -d proxy` depois dela (ADR-0028) |
 | Login do CRM diz credenciais inválidas | Seed da consultora nunca rodou (ou e-mail/senha diferentes do esperado) | Rode o seed (seção 6, "Criar o login do CRM") — idempotente; com o mesmo e-mail ele só redefine nome/senha/whatsapp |
 | `error: required variable POSTGRES_PASSWORD…` no deploy | `.env` da VPS ausente/incompleto | Revise o passo 4 (o script aponta o caminho exato) |
 | `error: required variable GHCR_OWNER…` / `docker login` falha na VPS | `GHCR_OWNER` ausente no `.env` da VPS | Adicione `GHCR_OWNER=seu_usuario` (minúsculas) ao `.env` (passo 4 / seção 3) |
@@ -556,4 +559,4 @@ Alternativa sem DBeaver: `ssh -N -L 15432:127.0.0.1:5432 deploy@IP_DA_VPS` e con
 
 ---
 
-*Documento do LP-12, atualizado no INF-05 e no INF-06 (roadmap). Decisões relacionadas: ADR-0003 (VPS+Caddy), ADR-0008 (compose de produção; API interna), ADR-0009 (domínio), ADR-0010 (CI + deploy via GitHub Actions), ADR-0011 (deploy por imagens via GHCR — modelo pull), ADR-0017 (CRM em `gestao.*`). Primeiro deploy: me chame para assistir — em caso de qualquer saída estranha nos passos 6–7 (ou no primeiro run do Actions), cole o erro na conversa.*
+*Documento do LP-12, atualizado no INF-05 e no INF-06 (roadmap). Decisões relacionadas: ADR-0003 (VPS+Caddy), ADR-0008 (compose de produção; API interna), ADR-0009 (domínio), ADR-0010 (CI + deploy via GitHub Actions), ADR-0011 (deploy por imagens via GHCR — modelo pull), ADR-0017 (CRM em `gestao.*`), ADR-0028 (proxy único da VPS compartilhada). Primeiro deploy: me chame para assistir — em caso de qualquer saída estranha nos passos 6–7 (ou no primeiro run do Actions), cole o erro na conversa.*
