@@ -1,39 +1,18 @@
 # Orquestração de PRODUÇÃO (landing + captura de lead + CRM autenticado).
 # Domínios: DOMAIN (landing, raiz + www) e CRM_DOMAIN (gestao.*) — ADR-0017.
 #
-# Exposição pública: SOMENTE o Caddy publica portas (80/443). Web, API e
-# Postgres ficam apenas na rede interna do compose — o browser nunca fala com a
-# API nem com o banco (security.md). A API é consumida só pelo web (server action).
+# Exposição pública: nenhuma porta publicada aqui. O proxy da VPS (Caddy do
+# repositório infra-vps, projeto `plataforma`, ADR-0028) é o único com 80/443 e
+# alcança só o web, pela rede externa `clientela-edge` (alias `clientela-web`).
+# API e Postgres ficam apenas na rede interna do compose — o browser nunca fala
+# com a API nem com o banco (security.md). A API é consumida só pelo web (server action).
 #
 # Envs obrigatórias usam ${VAR:?...}: o compose falha explícito se faltarem.
-# Copie .env.production.example para .env e preencha antes de subir.
+# Copie .env.production.example para .env e preencha antes de subir. Na VPS, use
+# o script ./compose da pasta: ele passa a tag do último deploy (.image-tag).
 name: clientela
 
 services:
-  # Proxy reverso + HTTPS automático (Let's Encrypt quando DOMAIN é domínio real).
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      # Única exposição pública. Portas do host parametrizáveis (smoke local usa
-      # portas altas quando 80/443 estão ocupadas).
-      - "${CADDY_HTTP_PORT:-80}:80"
-      - "${CADDY_HTTPS_PORT:-443}:443"
-    environment:
-      DOMAIN: "${DOMAIN:?defina DOMAIN no .env (ex. https://seudominio.com ou http://localhost para smoke)}"
-      # Host do CRM (ADR-0017). Smoke local: http://crm.localhost (mesmo :80,
-      # resolvido por host — *.localhost aponta para 127.0.0.1).
-      CRM_DOMAIN: "${CRM_DOMAIN:?defina CRM_DOMAIN no .env (ex. gestao.seudominio.com ou http://crm.localhost para smoke)}"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      web:
-        condition: service_healthy
-    networks:
-      - internal
-
   # Next.js standalone servido por Node. Envs de RUNTIME via environment (a
   # server action de lead valida o schema completo em runtime).
   web:
@@ -67,7 +46,13 @@ services:
       retries: 5
       start_period: 20s
     networks:
-      - internal
+      internal: {}
+      # Rede de borda criada pelo proxy da VPS. O alias é único na VPS: o
+      # Compose põe o nome do serviço (`web`) como alias em toda rede, e o
+      # Gizito também tem um `web` (ADR-0028).
+      clientela-edge:
+        aliases:
+          - clientela-web
 
   # API Bun/Elysia. Sem porta publicada: acessível só como `api:3001` na rede.
   api:
@@ -129,8 +114,9 @@ services:
 
 networks:
   internal:
+  clientela-edge:
+    name: clientela-edge
+    external: true
 
 volumes:
   clientela_pg_data:
-  caddy_data:
-  caddy_config:

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Roda o docker compose desta pasta com a tag do último deploy (.image-tag), para
+# que `up` e `pull` nunca caiam na `latest` (ADR-0011, ADR-0028). Na VPS, use
+# `./compose <comando>` no lugar de `docker compose <comando>`.
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")"
+if [[ -z ${IMAGE_TAG:-} && -f .image-tag ]]; then
+  IMAGE_TAG=$(<.image-tag)
+fi
+export IMAGE_TAG
+exec docker compose "$@"
